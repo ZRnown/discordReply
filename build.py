@@ -99,9 +99,7 @@ def build_app(target_platform="auto"):
         ])
         print("Using macOS build configuration")
     elif system == "windows" or system == "win":  # Windows
-        cmd.extend([
-            "--win-private-assemblies",  # Windows specific option
-        ])
+        # PyInstaller 6.0+ no longer needs --win-private-assemblies
         print("Using Windows build configuration")
     else:
         print(f"Unsupported platform: {system}")
