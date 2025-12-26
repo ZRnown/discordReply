@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""
+Discord 自动回复工具
+支持多账号、多规则的Discord自动回复桌面应用
+"""
+
+import sys
+import os
+
+# 添加src目录到Python路径
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from gui import main
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
