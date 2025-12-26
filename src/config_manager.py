@@ -2,7 +2,7 @@ import json
 import os
 from typing import List, Dict, Any
 from dataclasses import asdict
-from .discord_client import Account, Rule, MatchType
+from discord_client import Account, Rule, MatchType
 
 
 class ConfigManager:
