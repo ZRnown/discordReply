@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Discord自动回复工具打包脚本
-支持Mac和Windows平台打包
+Discord Auto Reply Tool Build Script
+Supports Mac and Windows platform packaging
 """
 
 import os
@@ -12,41 +12,41 @@ from pathlib import Path
 
 
 def run_command(command, description):
-    """运行命令并显示状态"""
-    print(f"正在{description}...")
+    """Run command and display status"""
+    print(f"Running {description}...")
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
-        print(f"✅ {description}成功")
+        print(f"[SUCCESS] {description} completed")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"❌ {description}失败: {e}")
-        print(f"错误输出: {e.stderr}")
+        print(f"[ERROR] {description} failed: {e}")
+        print(f"Error output: {e.stderr}")
         return False
 
 
 def check_dependencies():
-    """检查依赖"""
-    print("检查依赖...")
+    """Check dependencies"""
+    print("Checking dependencies...")
 
     try:
         import PyInstaller
-        print("✅ PyInstaller 已安装")
+        print("[OK] PyInstaller is installed")
     except ImportError:
-        print("❌ PyInstaller 未安装，请运行: pip install pyinstaller")
+        print("[ERROR] PyInstaller not installed, run: pip install pyinstaller")
         return False
 
     try:
         import discord
-        print("✅ discord.py-self 已安装")
+        print("[OK] discord.py-self is installed")
     except ImportError:
-        print("❌ discord.py-self 未安装，请运行: pip install discord.py-self")
+        print("[ERROR] discord.py-self not installed, run: pip install discord.py-self")
         return False
 
     try:
         import PyQt6
-        print("✅ PyQt6 已安装")
+        print("[OK] PyQt6 is installed")
     except ImportError:
-        print("❌ PyQt6 未安装，请运行: pip install PyQt6")
+        print("[ERROR] PyQt6 not installed, run: pip install PyQt6")
         return False
 
     # qasync不再需要，直接使用asyncio集成
@@ -55,22 +55,22 @@ def check_dependencies():
 
 
 def clean_build():
-    """清理构建文件"""
-    print("清理构建文件...")
+    """Clean build files"""
+    print("Cleaning build files...")
 
     dirs_to_clean = ["build", "dist"]
     for dir_name in dirs_to_clean:
         if os.path.exists(dir_name):
             import shutil
             shutil.rmtree(dir_name)
-            print(f"✅ 删除 {dir_name} 目录")
+            print(f"[CLEAN] Removed {dir_name} directory")
 
-    # 清理spec文件生成的缓存
+    # Clean spec file cache
     spec_files = ["DiscordAutoReply.spec"]
     for spec_file in spec_files:
         if os.path.exists(spec_file):
             os.remove(spec_file)
-            print(f"✅ 删除 {spec_file}")
+            print(f"[CLEAN] Removed {spec_file}")
 
 
 def build_app(target_platform="auto"):
@@ -80,34 +80,34 @@ def build_app(target_platform="auto"):
     else:
         system = target_platform.lower()
 
-    print(f"目标平台: {system}")
+    print(f"Target platform: {system}")
 
-    # 基础PyInstaller命令
+    # Base PyInstaller command
     cmd = [
         "pyinstaller",
-        "--onefile",  # 打包成单个文件
-        "--windowed",  # 无控制台窗口
-        "--clean",  # 清理临时文件
+        "--onefile",  # Package as single file
+        "--windowed",  # No console window
+        "--clean",  # Clean temporary files
         "--name", "DiscordAutoReply",
     ]
 
-    # 根据平台添加特定选项
+    # Add platform-specific options
     if system == "darwin" or system == "mac":  # macOS
         cmd.extend([
-            "--target-arch", "universal2",  # 通用二进制
+            "--target-arch", "universal2",  # Universal binary
             "--osx-bundle-identifier", "com.discordautoreply.app",
         ])
-        print("使用macOS打包配置")
+        print("Using macOS build configuration")
     elif system == "windows" or system == "win":  # Windows
         cmd.extend([
-            "--win-private-assemblies",  # Windows特定选项
+            "--win-private-assemblies",  # Windows specific option
         ])
-        print("使用Windows打包配置")
+        print("Using Windows build configuration")
     else:
-        print(f"不支持的平台: {system}")
+        print(f"Unsupported platform: {system}")
         return False
 
-    # 添加数据文件
+    # Add data files
     if os.path.exists("config"):
         if system == "windows":
             cmd.extend(["--add-data", "config;config"])
@@ -120,94 +120,94 @@ def build_app(target_platform="auto"):
         else:  # macOS and others
             cmd.extend(["--add-data", "assets:assets"])
 
-    # 添加主文件
+    # Add main file
     cmd.append("src/main.py")
 
-    # 运行PyInstaller
+    # Run PyInstaller
     command_str = " ".join(cmd)
-    print(f"执行命令: {command_str}")
+    print(f"Executing command: {command_str}")
 
-    return run_command(command_str, "打包应用程序")
+    return run_command(command_str, "building application")
 
 
 def create_dmg():
-    """为macOS创建DMG文件"""
+    """Create DMG file for macOS"""
     if platform.system().lower() != "darwin":
         return True
 
-    print("为macOS创建DMG文件...")
+    print("Creating DMG file for macOS...")
 
     app_path = "dist/DiscordAutoReply.app"
     dmg_path = "dist/DiscordAutoReply.dmg"
 
     if not os.path.exists(app_path):
-        print("❌ 未找到.app文件")
+        print("[ERROR] .app file not found")
         return False
 
-    # 使用hdiutil创建DMG
+    # Use hdiutil to create DMG
     cmd = f"hdiutil create -volname 'DiscordAutoReply' -srcfolder {app_path} -ov -format UDZO {dmg_path}"
 
-    return run_command(cmd, "创建DMG文件")
+    return run_command(cmd, "creating DMG file")
 
 
 def main():
     """主函数"""
-    print("🚀 Discord自动回复工具打包器")
+    print("Discord Auto Reply Tool Builder")
     print("=" * 50)
 
-    # 解析命令行参数
+    # Parse command line arguments
     import argparse
-    parser = argparse.ArgumentParser(description='打包Discord自动回复工具')
+    parser = argparse.ArgumentParser(description='Build Discord auto reply tool')
     parser.add_argument('--target', choices=['windows', 'mac', 'auto'],
-                       default='auto', help='目标平台 (默认: 自动检测)')
+                       default='auto', help='Target platform (default: auto-detect)')
     parser.add_argument('--no-dmg', action='store_true',
-                       help='macOS不创建DMG文件')
+                       help='Do not create DMG file for macOS')
     args = parser.parse_args()
 
-    # 检查Python版本
+    # Check Python version
     if sys.version_info < (3, 8):
-        print("❌ 需要Python 3.8或更高版本")
+        print("[ERROR] Python 3.8 or higher is required")
         return False
 
-    print(f"Python版本: {sys.version}")
-    print(f"目标平台: {args.target}")
+    print(f"Python version: {sys.version}")
+    print(f"Target platform: {args.target}")
 
-    # 检查依赖
+    # Check dependencies
     if not check_dependencies():
         return False
 
-    # 切换到项目根目录
+    # Switch to project root directory
     project_root = Path(__file__).parent
     os.chdir(project_root)
 
-    # 清理旧的构建文件
+    # Clean old build files
     clean_build()
 
-    # 构建应用程序
+    # Build application
     if not build_app(args.target):
         return False
 
-    # 为macOS创建DMG（如果不是Windows目标且没有禁用DMG）
+    # Create DMG for macOS (if not Windows target and not disabled)
     if not args.no_dmg and platform.system().lower() == "darwin":
         if not create_dmg():
             return False
 
     print("\n" + "=" * 50)
-    print("🎉 打包完成！")
+    print("[SUCCESS] Build completed!")
 
-    # 显示输出文件信息
+    # Display output file information
     dist_dir = Path("dist")
     if dist_dir.exists():
-        print("\n输出文件:")
+        print("\nOutput files:")
         for file_path in dist_dir.iterdir():
             if file_path.is_file():
                 size_mb = file_path.stat().st_size / (1024 * 1024)
-                print(".2f")
+                print(f"  {file_path.name}: {size_mb:.2f} MB")
 
-    print("\n📖 使用说明:")
-    print("1. 运行生成的可执行文件")
-    print("2. 在程序中添加Discord账号和自动回复规则")
-    print("3. 点击启动开始监听和自动回复")
+    print("\nUsage instructions:")
+    print("1. Run the generated executable file")
+    print("2. Add Discord accounts and auto-reply rules in the program")
+    print("3. Click start to begin monitoring and auto-replying")
 
     return True
 
