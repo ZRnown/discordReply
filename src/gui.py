@@ -480,8 +480,27 @@ class WorkerThread(QThread):
         print("正在停止Discord工作线程...")
         self.running = False
 
-        # 标记停止状态，实际的停止操作会在_run_clients中完成
-        # 不在这里直接调用异步方法，避免事件循环冲突
+        # 创建新的事件循环来执行异步停止操作
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._stop_clients_async())
+            loop.close()
+        except Exception as e:
+            print(f"异步停止客户端时出错: {e}")
+            # 如果异步停止失败，至少确保running标志被设置
+            self.running = False
+
+    async def _stop_clients_async(self):
+        """异步停止所有客户端"""
+        try:
+            print("正在异步停止Discord客户端...")
+            await self.discord_manager.stop_all_clients()
+            print("Discord客户端异步停止完成")
+        except Exception as e:
+            print(f"异步停止客户端失败: {e}")
+            raise
 
 
 class MainWindow(QMainWindow):
@@ -601,6 +620,7 @@ class MainWindow(QMainWindow):
         self.accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.accounts_table.setAlternatingRowColors(True)
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.accounts_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         self.accounts_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.accounts_table.customContextMenuRequested.connect(self.show_accounts_context_menu)
         layout.addWidget(self.accounts_table)
@@ -635,6 +655,7 @@ class MainWindow(QMainWindow):
         self.rules_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.rules_table.setAlternatingRowColors(True)
         self.rules_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.rules_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         self.rules_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.rules_table.customContextMenuRequested.connect(self.show_rules_context_menu)
         layout.addWidget(self.rules_table)
@@ -900,43 +921,73 @@ class MainWindow(QMainWindow):
 
     def show_accounts_context_menu(self, position):
         """显示账号右键菜单"""
-        current_row = self.accounts_table.currentRow()
-        if current_row < 0:
-            return
+        selected_rows = set()
+        for item in self.accounts_table.selectedItems():
+            selected_rows.add(item.row())
 
         menu = QMenu()
-        edit_action = menu.addAction("编辑账号")
-        delete_action = menu.addAction("删除账号")
+
+        if len(selected_rows) == 1:
+            # 单个账号的菜单
+            current_row = list(selected_rows)[0]
+            edit_action = menu.addAction("编辑账号")
+            delete_action = menu.addAction("删除账号")
+        elif len(selected_rows) > 1:
+            # 多个账号的菜单
+            delete_multiple_action = menu.addAction(f"删除选中的 {len(selected_rows)} 个账号")
+        else:
+            # 没有选中账号时的菜单
+            return
 
         action = menu.exec(self.accounts_table.mapToGlobal(position))
 
-        if action == edit_action:
-            token_item = self.accounts_table.item(current_row, 0)
-            if token_item:
-                token = token_item.data(Qt.ItemDataRole.UserRole)
-                self.edit_account_by_alias(token)  # 使用alias方法，因为token作为alias存储
-        elif action == delete_action:
-            token_item = self.accounts_table.item(current_row, 0)
-            if token_item:
-                token = token_item.data(Qt.ItemDataRole.UserRole)
-                self.remove_account_by_token(token)
+        if len(selected_rows) == 1:
+            current_row = list(selected_rows)[0]
+            if action == edit_action:
+                token_item = self.accounts_table.item(current_row, 0)
+                if token_item:
+                    token = token_item.data(Qt.ItemDataRole.UserRole)
+                    self.edit_account_by_alias(token)  # 使用alias方法，因为token作为alias存储
+            elif action == delete_action:
+                token_item = self.accounts_table.item(current_row, 0)
+                if token_item:
+                    token = token_item.data(Qt.ItemDataRole.UserRole)
+                    self.remove_account_by_token(token)
+        elif len(selected_rows) > 1:
+            if action == delete_multiple_action:
+                self.remove_multiple_accounts(list(selected_rows))
 
     def show_rules_context_menu(self, position):
         """显示规则右键菜单"""
-        current_row = self.rules_table.currentRow()
-        if current_row < 0:
-            return
+        selected_rows = set()
+        for item in self.rules_table.selectedItems():
+            selected_rows.add(item.row())
 
         menu = QMenu()
-        edit_action = menu.addAction("编辑规则")
-        delete_action = menu.addAction("删除规则")
+
+        if len(selected_rows) == 1:
+            # 单个规则的菜单
+            current_row = list(selected_rows)[0]
+            edit_action = menu.addAction("编辑规则")
+            delete_action = menu.addAction("删除规则")
+        elif len(selected_rows) > 1:
+            # 多个规则的菜单
+            delete_multiple_action = menu.addAction(f"删除选中的 {len(selected_rows)} 个规则")
+        else:
+            # 没有选中规则时的菜单
+            return
 
         action = menu.exec(self.rules_table.mapToGlobal(position))
 
-        if action == edit_action:
-            self.edit_rule_by_index(current_row)
-        elif action == delete_action:
-            self.remove_rule_by_index(current_row)
+        if len(selected_rows) == 1:
+            current_row = list(selected_rows)[0]
+            if action == edit_action:
+                self.edit_rule_by_index(current_row)
+            elif action == delete_action:
+                self.remove_rule_by_index(current_row)
+        elif len(selected_rows) > 1:
+            if action == delete_multiple_action:
+                self.remove_multiple_rules(list(selected_rows))
 
     def add_account(self):
         """添加新账号"""
@@ -1148,6 +1199,35 @@ class MainWindow(QMainWindow):
             self.update_accounts_list()
             self.save_config()
 
+    def remove_multiple_accounts(self, indices):
+        """批量删除多个账号"""
+        indices.sort(reverse=True)  # 从大到小排序，避免删除时索引变化
+
+        reply = QMessageBox.question(
+            self, "确认批量删除",
+            f"确定要删除选中的 {len(indices)} 个账号吗？\n此操作无法撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            deleted_count = 0
+            for index in indices:
+                try:
+                    # 获取账号信息用于日志
+                    if index < len(self.discord_manager.accounts):
+                        account = self.discord_manager.accounts[index]
+                        account_name = account.alias
+                        self.discord_manager.remove_account(account.token)
+                        deleted_count += 1
+                        self.add_log(f"账号 '{account_name}' 已删除", "info")
+                except (IndexError, ValueError) as e:
+                    # 账号可能已经被删除，跳过
+                    continue
+
+            self.update_accounts_list()
+            self.save_config()
+            self.add_log(f"成功删除 {deleted_count} 个账号", "success")
+
 
     def add_rule(self):
         """添加新规则"""
@@ -1216,6 +1296,30 @@ class MainWindow(QMainWindow):
             self.update_rules_list()
             self.save_config()
 
+    def remove_multiple_rules(self, indices):
+        """批量删除多个规则"""
+        indices.sort(reverse=True)  # 从大到小排序，避免删除时索引变化
+
+        reply = QMessageBox.question(
+            self, "确认批量删除",
+            f"确定要删除选中的 {len(indices)} 个规则吗？\n此操作无法撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            deleted_count = 0
+            for index in indices:
+                try:
+                    self.discord_manager.remove_rule(index)
+                    deleted_count += 1
+                except IndexError:
+                    # 规则可能已经被删除，跳过
+                    continue
+
+            self.update_rules_list()
+            self.save_config()
+            self.add_log(f"成功删除 {deleted_count} 个规则", "success")
+
 
 
 
@@ -1270,8 +1374,8 @@ class MainWindow(QMainWindow):
             # 设置停止标志
             self.worker_thread.running = False
 
-            # 等待线程完成，最多等待8秒
-            if self.worker_thread.wait(8000):  # 增加等待时间到8秒
+            # 等待线程完成，最多等待12秒（增加等待时间）
+            if self.worker_thread.wait(12000):  # 增加等待时间到12秒
                 self.add_log("机器人停止完成", "success")
             else:
                 self.add_log("机器人停止超时，但后台清理将继续进行", "warning")
