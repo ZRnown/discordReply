@@ -112,42 +112,54 @@ main_script = os.path.join(SPECPATH, 'src', 'main.py')
 pyside6_datas, pyside6_binaries, pyside6_hiddenimports = collect_all('PySide6')
 shiboken6_datas, shiboken6_binaries, shiboken6_hiddenimports = collect_all('shiboken6')
 
-# Hidden imports
+# Core hidden imports
 hidden_imports = [
     'discord_client',
     'config_manager',
     'gui',
-    'discord',
-    'aiohttp',
-    'yarl',
-    'asyncio',
-    'typing_extensions',
+    'discord.ext.commands',  # 确保commands扩展被包含
+    'discord.ext.tasks',     # 如果用到tasks
 ] + pyside6_hiddenimports + shiboken6_hiddenimports
 
-# Data files
+# Data files - 只包含必要的配置文件
 data_files = []
 if os.path.exists('config'):
     data_files.append(('config', 'config'))
 
-if os.path.exists('assets'):
-    data_files.append(('assets', 'assets'))
-
-# Add src directory
-if os.path.exists('src'):
-    data_files.append(('src', 'src'))
-
-data_files += pyside6_datas + shiboken6_datas
+# 移除不必要的assets和src目录打包
 
 a = Analysis(
     [main_script],
     pathex=[SPECPATH],
     binaries=pyside6_binaries + shiboken6_binaries,
-    datas=data_files,
+    datas=data_files + pyside6_datas + shiboken6_datas,
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # 排除不必要的标准库模块
+        'tkinter',
+        'unittest',
+        'pdb',
+        'pydoc',
+        'test',
+        'distutils',
+        # 排除不必要的第三方包
+        'numpy',
+        'matplotlib',
+        'PIL',
+        'pygame',
+        'cv2',
+        # 排除开发工具
+        'pip',
+        'setuptools',
+        'wheel',
+        # 排除不必要的网络库
+        'urllib3',
+        'requests',
+        'httpx',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -166,7 +178,7 @@ exe = EXE(
     name='DiscordAutoReply',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=True,  # 启用strip以减小文件大小
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
