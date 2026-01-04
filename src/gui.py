@@ -372,9 +372,9 @@ class RuleDialog(QDialog):
         self.ignore_mentions_checkbox.setChecked(True if not self.rule else getattr(self.rule, 'ignore_mentions', False))
 
         # 大小写敏感
-        self.case_sensitive_checkbox = QCheckBox("区分大小写")
-        self.case_sensitive_checkbox.setToolTip("启用后，关键词匹配将区分大小写；关闭后，不区分大小写")
-        self.case_sensitive_checkbox.setChecked(True if not self.rule else getattr(self.rule, 'case_sensitive', False))
+        self.case_sensitive_checkbox = QCheckBox("不区分大小写")
+        self.case_sensitive_checkbox.setToolTip("启用后，关键词匹配将不区分大小写；关闭后，将区分大小写")
+        self.case_sensitive_checkbox.setChecked(True if not self.rule else not getattr(self.rule, 'case_sensitive', False))
         layout.addWidget(self.case_sensitive_checkbox)
         layout.addWidget(self.ignore_mentions_checkbox)
 
@@ -420,7 +420,7 @@ class RuleDialog(QDialog):
             'is_active': self.active_checkbox.isChecked(),
             'ignore_replies': self.ignore_replies_checkbox.isChecked(),
             'ignore_mentions': self.ignore_mentions_checkbox.isChecked(),
-            'case_sensitive': self.case_sensitive_checkbox.isChecked(),        }
+            'case_sensitive': not self.case_sensitive_checkbox.isChecked(),        }
 
 
 class WorkerThread(QThread):
