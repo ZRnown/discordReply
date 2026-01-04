@@ -41,7 +41,8 @@ class ConfigManager:
                     "delay_max": rule.delay_max,
                     "is_active": rule.is_active,
                     "ignore_replies": getattr(rule, 'ignore_replies', False),
-                    "ignore_mentions": getattr(rule, 'ignore_mentions', False)
+                    "ignore_mentions": getattr(rule, 'ignore_mentions', False),
+                    "case_sensitive": getattr(rule, 'case_sensitive', False)
                 }
                 for rule in rules
             ]
@@ -88,7 +89,8 @@ class ConfigManager:
                     delay_max=rule_data.get("delay_max", 5.0),
                     is_active=rule_data.get("is_active", True),
                     ignore_replies=rule_data.get("ignore_replies", False),
-                    ignore_mentions=rule_data.get("ignore_mentions", False)
+                    ignore_mentions=rule_data.get("ignore_mentions", False),
+                    case_sensitive=rule_data.get("case_sensitive", False)
                 )
                 rules.append(rule)
 
@@ -118,7 +120,10 @@ class ConfigManager:
                         "target_channels": rule.target_channels,
                         "delay_min": rule.delay_min,
                         "delay_max": rule.delay_max,
-                        "is_active": rule.is_active
+                        "is_active": rule.is_active,
+                        "ignore_replies": getattr(rule, 'ignore_replies', False),
+                        "ignore_mentions": getattr(rule, 'ignore_mentions', False),
+                        "case_sensitive": getattr(rule, 'case_sensitive', False)
                     }
                     for rule in rules
                 ]
@@ -161,7 +166,8 @@ class ConfigManager:
                     delay_max=rule_data.get("delay_max", 5.0),
                     is_active=rule_data.get("is_active", True),
                     ignore_replies=rule_data.get("ignore_replies", False),
-                    ignore_mentions=rule_data.get("ignore_mentions", False)
+                    ignore_mentions=rule_data.get("ignore_mentions", False),
+                    case_sensitive=rule_data.get("case_sensitive", False)
                 )
                 rules.append(rule)
 

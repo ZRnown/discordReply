@@ -127,8 +127,11 @@ class AccountDialog(QDialog):
         self.is_validating = True
         self.validate_btn.setEnabled(False)
         self.validate_btn.setText("验证中...")
-        self.status_label.setText("🔄 正在验证Token...")
+        self.status_label.setText("🔄 正在验证Token，请稍候...")
         self.status_label.setStyleSheet("color: blue;")
+
+        # 强制更新UI
+        QApplication.processEvents()
 
         try:
             # 更新状态：正在连接
@@ -367,6 +370,12 @@ class RuleDialog(QDialog):
         self.ignore_mentions_checkbox = QCheckBox("忽略@消息")
         self.ignore_mentions_checkbox.setToolTip("启用后，当消息中包含@他人时，不会回复这条消息")
         self.ignore_mentions_checkbox.setChecked(True if not self.rule else getattr(self.rule, 'ignore_mentions', False))
+
+        # 大小写敏感
+        self.case_sensitive_checkbox = QCheckBox("区分大小写")
+        self.case_sensitive_checkbox.setToolTip("启用后，关键词匹配将区分大小写；关闭后，不区分大小写")
+        self.case_sensitive_checkbox.setChecked(True if not self.rule else getattr(self.rule, 'case_sensitive', False))
+        layout.addWidget(self.case_sensitive_checkbox)
         layout.addWidget(self.ignore_mentions_checkbox)
 
         # 按钮
@@ -410,8 +419,8 @@ class RuleDialog(QDialog):
             'delay_max': self.delay_max_spin.value(),
             'is_active': self.active_checkbox.isChecked(),
             'ignore_replies': self.ignore_replies_checkbox.isChecked(),
-            'ignore_mentions': self.ignore_mentions_checkbox.isChecked()
-        }
+            'ignore_mentions': self.ignore_mentions_checkbox.isChecked(),
+            'case_sensitive': self.case_sensitive_checkbox.isChecked(),        }
 
 
 class WorkerThread(QThread):
@@ -672,6 +681,12 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout()
         header_layout.addWidget(QLabel("自动回复规则管理"))
 
+        # 搜索框
+        self.rule_search_input = QLineEdit()
+        self.rule_search_input.setPlaceholderText("搜索关键词...")
+        self.rule_search_input.textChanged.connect(self.filter_rules)
+        header_layout.addWidget(self.rule_search_input)
+
         header_layout.addStretch()
 
         add_rule_btn = QPushButton("添加规则")
@@ -723,6 +738,34 @@ class MainWindow(QMainWindow):
         rules_layout.addWidget(self.rules_stats_label)
 
         layout.addWidget(rules_group)
+
+        # 轮换设置
+        rotation_group = QGroupBox("账号轮换设置")
+        rotation_layout = QVBoxLayout(rotation_group)
+
+        # 启用轮换
+        self.rotation_enabled_checkbox = QCheckBox("启用账号轮换")
+        self.rotation_enabled_checkbox.setToolTip("启用后，当账号被频率限制时会自动切换到其他账号发送消息")
+        self.rotation_enabled_checkbox.stateChanged.connect(self.on_rotation_enabled_changed)
+        rotation_layout.addWidget(self.rotation_enabled_checkbox)
+
+        # 轮换间隔设置
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("轮换间隔(分钟):"))
+        self.rotation_interval_spin = QSpinBox()
+        self.rotation_interval_spin.setRange(1, 1440)  # 1分钟到24小时
+        self.rotation_interval_spin.setValue(10)  # 默认10分钟
+        self.rotation_interval_spin.setSuffix("分钟")
+        self.rotation_interval_spin.setEnabled(False)  # 默认禁用
+        interval_layout.addWidget(self.rotation_interval_spin)
+        interval_layout.addStretch()
+        rotation_layout.addLayout(interval_layout)
+
+        # 轮换状态
+        self.rotation_status_label = QLabel("轮换模式: 未启用")
+        rotation_layout.addWidget(self.rotation_status_label)
+
+        layout.addWidget(rotation_group)
 
         # 日志显示
         log_group = QGroupBox("运行日志")
@@ -791,6 +834,9 @@ class MainWindow(QMainWindow):
         accounts, rules = self.config_manager.load_config()
         self.discord_manager.accounts = accounts
         self.discord_manager.rules = rules
+
+        # 加载轮换设置（暂时使用默认值，后续可以扩展配置文件）
+        # TODO: 从配置文件加载轮换设置
 
         self.update_accounts_list()
         self.update_rules_list()
@@ -958,6 +1004,25 @@ class MainWindow(QMainWindow):
         total_rules = len(self.discord_manager.rules)
         active_rules = len([rule for rule in self.discord_manager.rules if rule.is_active])
         self.rules_stats_label.setText(f"总规则数: {total_rules} | 启用规则数: {active_rules}")
+
+        # 应用当前搜索过滤
+        self.filter_rules()
+
+    def filter_rules(self):
+        """根据搜索关键词过滤规则显示"""
+        search_text = self.rule_search_input.text().strip().lower()
+
+        for row in range(self.rules_table.rowCount()):
+            show_row = True
+            if search_text:
+                # 检查关键词列是否包含搜索文本
+                keywords_item = self.rules_table.item(row, 0)
+                if keywords_item:
+                    keywords = keywords_item.toolTip().lower() if keywords_item.toolTip() else keywords_item.text().lower()
+                    if search_text not in keywords:
+                        show_row = False
+
+            self.rules_table.setRowHidden(row, not show_row)
 
     def update_status(self):
         """更新状态显示"""
@@ -1357,7 +1422,10 @@ class MainWindow(QMainWindow):
                     target_channels=data['target_channels'],
                     delay_min=data['delay_min'],
                     delay_max=data['delay_max'],
-                    is_active=data['is_active']
+                    is_active=data['is_active'],
+                    ignore_replies=data.get('ignore_replies', False),
+                    ignore_mentions=data.get('ignore_mentions', False),
+                    case_sensitive=data.get('case_sensitive', False)
                 )
 
                 self.update_rules_list()
@@ -1514,6 +1582,26 @@ class MainWindow(QMainWindow):
     def toggle_auto_scroll(self, state):
         """切换自动滚动"""
         self.auto_scroll_log = state == 2  # 2表示选中状态
+
+    def on_rotation_enabled_changed(self, state):
+        """轮换启用状态改变"""
+        enabled = state == 2  # 2表示选中状态
+        self.rotation_interval_spin.setEnabled(enabled)
+
+        # 更新DiscordManager设置
+        self.discord_manager.rotation_enabled = enabled
+        if enabled:
+            self.discord_manager.rotation_interval = self.rotation_interval_spin.value() * 60  # 转换为秒
+            self.rotation_status_label.setText(f"轮换模式: 已启用 (间隔{self.rotation_interval_spin.value()}分钟)")
+        else:
+            self.rotation_status_label.setText("轮换模式: 未启用")
+
+        # 保存配置
+        self.save_config()
+
+        if self.log_callback:
+            status = "启用" if enabled else "禁用"
+            self.log_callback(f"账号轮换模式已{status}")
 
     def on_error(self, error_msg):
         """错误处理"""
