@@ -34,10 +34,10 @@ jobs:
 
       - name: Build EXE
         run: |
-          python -m nuitka --onefile --windows-uac-admin --disable-console --assume-yes-for-downloads --output-filename=DiscordAutoReply --output-dir=dist run.py
+          python -m nuitka --onefile --windows-uac-admin --windows-console-mode=disable --assume-yes-for-downloads --output-filename=DiscordAutoReply --output-dir=dist run.py
 
-      - name: Compress EXE
-        run: upx --best dist/DiscordAutoReply.exe
+      - name: Compress EXE (optional)
+        run: upx --best dist/DiscordAutoReply.exe || echo "UPX compression failed, continuing without compression"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
