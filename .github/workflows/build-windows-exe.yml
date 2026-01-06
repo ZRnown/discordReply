@@ -2,8 +2,9 @@ name: Build Windows EXE
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -11,7 +12,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -29,78 +30,17 @@ jobs:
 
       - name: Create version file
         run: |
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'dev' }
-          "version = '$version'" | Out-File -FilePath src/version.py -Encoding utf8
+          echo "version = 'dev'" > src/version.py
 
-      - name: Build EXE with Nuitka
+      - name: Build EXE
         run: |
-          python -m nuitka `
-            --standalone `
-            --onefile `
-            --windows-uac-admin `
-            --windows-company-name="Discord Auto Reply" `
-            --windows-product-name="Discord Auto Reply Tool" `
-            --windows-file-description="Discord Auto Reply Tool" `
-            --disable-console `
-            --assume-yes-for-downloads `
-            --output-filename=DiscordAutoReply `
-            --output-dir=dist `
-            run.py
+          python -m nuitka --onefile --windows-uac-admin --disable-console --assume-yes-for-downloads --output-filename=DiscordAutoReply --output-dir=dist run.py
 
       - name: Compress EXE
         run: upx --best dist/DiscordAutoReply.exe
 
-      - name: Create ZIP archive
-        run: |
-          Compress-Archive -Path dist/DiscordAutoReply.exe -DestinationPath DiscordAutoReply-windows.zip -Force
-
-      - name: Upload EXE artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DiscordAutoReply-exe
+          name: DiscordAutoReply-windows
           path: dist/DiscordAutoReply.exe
-
-      - name: Upload ZIP artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: DiscordAutoReply-zip
-          path: DiscordAutoReply-windows.zip
-
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/create-release@v1
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          body: |
-            Discord Auto Reply Tool v${{ github.ref_name }}
-
-            ## Downloads
-            - DiscordAutoReply.exe - Main executable
-            - DiscordAutoReply-windows.zip - ZIP archive
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: dist/DiscordAutoReply.exe
-          asset_name: DiscordAutoReply.exe
-          asset_content_type: application/octet-stream
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload ZIP to release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: DiscordAutoReply-windows.zip
-          asset_name: DiscordAutoReply-windows.zip
-          asset_content_type: application/zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
