@@ -19,15 +19,15 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-/venv
+MANIFEST
+
 # PyInstaller
 *.manifest
 *.spec
 
-# Discord tokens and config (sensitive data)
-config/config.json
-*.token
-*tokens*
+# Nuitka
+*.exe
+*.app
 
 # IDE
 .vscode/
@@ -45,10 +45,22 @@ config/config.json
 ehthumbs.db
 Thumbs.db
 
+# Config files (keep example)
+config/config.json
+!config/example_config.json
+
 # Logs
 *.log
 logs/
 
 # Temporary files
 *.tmp
-*.temp
+*.bak
+*.backup
+
+# Build artifacts
+dist/
+build/
+*.exe
+*.7z
+*.zip

@@ -7,13 +7,44 @@ from PySide6.QtWidgets import (
     QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,
     QCheckBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QFileDialog, QSplitter, QProgressBar,
-    QDialog, QMenu, QScrollArea
+    QDialog, QMenu, QScrollArea, QFrame, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QColor
 
 from discord_client import DiscordManager, Account, Rule, MatchType
 from config_manager import ConfigManager
+
+
+class LicenseVerifyThread(QThread):
+    """许可证验证工作线程"""
+    finished = Signal(bool, str)  # success, message
+    error = Signal(str)  # error_message
+
+    def __init__(self, license_manager, license_key):
+        super().__init__()
+        self.license_manager = license_manager
+        self.license_key = license_key
+
+    def run(self):
+        """在线程中运行异步验证"""
+        try:
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # 运行异步验证
+            success, message = loop.run_until_complete(
+                self.license_manager.validate_license(self.license_key)
+            )
+
+            # 发送结果信号
+            self.finished.emit(success, message)
+
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            loop.close()
 
 
 class AccountDialog(QDialog):
@@ -378,6 +409,44 @@ class RuleDialog(QDialog):
         layout.addWidget(self.case_sensitive_checkbox)
         layout.addWidget(self.ignore_mentions_checkbox)
 
+        # 图片回复
+        image_layout = QHBoxLayout()
+        image_layout.addWidget(QLabel("图片回复 (可选):"))
+        self.image_path_input = QLineEdit()
+        self.image_path_input.setPlaceholderText("选择图片文件路径...")
+        if self.rule and self.rule.image_path:
+            self.image_path_input.setText(self.rule.image_path)
+        image_layout.addWidget(self.image_path_input)
+
+        browse_button = QPushButton("浏览...")
+        browse_button.clicked.connect(self.browse_image)
+        image_layout.addWidget(browse_button)
+
+        layout.addLayout(image_layout)
+
+        # 账号选择
+        accounts_group = QGroupBox("使用账号 (可选)")
+        accounts_layout = QVBoxLayout(accounts_group)
+
+        accounts_layout.addWidget(QLabel("选择可使用此规则的账号（留空则随机使用所有账号）:"))
+        self.accounts_list = QListWidget()
+        self.accounts_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.accounts_list.setMaximumHeight(120)
+
+        # 添加可用账号到列表
+        if hasattr(self.parent(), 'discord_manager') and self.parent().discord_manager.accounts:
+            for account in self.parent().discord_manager.accounts:
+                if account.is_active and account.is_valid:
+                    item = QListWidgetItem(f"{account.alias}")
+                    item.setData(Qt.ItemDataRole.UserRole, account.token)
+                    # 如果是编辑模式，检查账号是否已选中
+                    if self.rule and account.token in getattr(self.rule, 'account_ids', []):
+                        item.setSelected(True)
+                    self.accounts_list.addItem(item)
+
+        accounts_layout.addWidget(self.accounts_list)
+        layout.addWidget(accounts_group)
+
         # 按钮
         buttons_layout = QHBoxLayout()
         buttons_layout.addStretch()
@@ -410,6 +479,13 @@ class RuleDialog(QDialog):
             except ValueError:
                 pass  # 忽略无效的频道ID
 
+        # 获取选中的账号ID
+        selected_account_ids = []
+        for i in range(self.accounts_list.count()):
+            item = self.accounts_list.item(i)
+            if item.isSelected():
+                selected_account_ids.append(item.data(Qt.ItemDataRole.UserRole))
+
         return {
             'keywords': [k.strip() for k in self.keywords_input.text().split(",") if k.strip()],
             'reply': self.reply_input.toPlainText().strip(),
@@ -420,7 +496,21 @@ class RuleDialog(QDialog):
             'is_active': self.active_checkbox.isChecked(),
             'ignore_replies': self.ignore_replies_checkbox.isChecked(),
             'ignore_mentions': self.ignore_mentions_checkbox.isChecked(),
-            'case_sensitive': not self.case_sensitive_checkbox.isChecked(),        }
+            'case_sensitive': not self.case_sensitive_checkbox.isChecked(),
+            'image_path': self.image_path_input.text().strip() or None,
+            'account_ids': selected_account_ids,
+        }
+
+    def browse_image(self):
+        """浏览选择图片文件"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                self.image_path_input.setText(selected_files[0])
 
 
 class WorkerThread(QThread):
@@ -557,8 +647,14 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_config()
 
+        # 许可证验证
+        self.check_license()
+
         # 连接日志信号
         self.log_signal.connect(self.add_log)
+
+        # 更新许可证状态
+        self.update_license_status()
 
     def init_ui(self):
         """初始化用户界面"""
@@ -581,6 +677,12 @@ class MainWindow(QMainWindow):
 
         # 规则管理标签页
         self.create_rules_tab()
+
+        # 自动发帖标签页
+        self.create_posting_tab()
+
+        # 自动评论标签页
+        self.create_comment_tab()
 
         # 状态监控标签页
         self.create_status_tab()
@@ -656,8 +758,8 @@ class MainWindow(QMainWindow):
 
         # 账号表格
         self.accounts_table = QTableWidget()
-        self.accounts_table.setColumnCount(4)
-        self.accounts_table.setHorizontalHeaderLabels(["用户名", "Token状态", "应用规则", "操作"])
+        self.accounts_table.setColumnCount(3)
+        self.accounts_table.setHorizontalHeaderLabels(["用户名", "Token状态", "操作"])
         self.accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.accounts_table.setAlternatingRowColors(True)
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -673,9 +775,70 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(accounts_widget, "账号管理")
 
     def create_rules_tab(self):
-        """创建规则管理标签页"""
+        """创建自动回复标签页"""
         rules_widget = QWidget()
         layout = QVBoxLayout(rules_widget)
+
+        # 账号轮换和全局设置
+        rotation_group = QGroupBox("账号轮换与全局设置")
+        rotation_layout = QVBoxLayout(rotation_group)
+
+        # 第一行：账号轮换设置
+        rotation_row = QHBoxLayout()
+
+        # 启用轮换
+        self.rotation_enabled_checkbox = QCheckBox("启用账号轮换")
+        self.rotation_enabled_checkbox.setToolTip("启用后，当账号被频率限制时会自动切换到其他账号发送消息")
+        self.rotation_enabled_checkbox.stateChanged.connect(self.on_rotation_enabled_changed)
+        rotation_row.addWidget(self.rotation_enabled_checkbox)
+
+        rotation_row.addWidget(QLabel("轮换间隔:"))
+        self.rotation_interval_spin = QSpinBox()
+        self.rotation_interval_spin.setRange(1, 1440)  # 1分钟到24小时
+        self.rotation_interval_spin.setValue(10)  # 默认10分钟
+        self.rotation_interval_spin.setSuffix("分钟")
+        self.rotation_interval_spin.setEnabled(True)  # 轮换间隔设置始终可用，用户可以预设参数
+        rotation_row.addWidget(self.rotation_interval_spin)
+
+        rotation_row.addStretch()
+
+        # 轮换状态
+        self.rotation_status_label = QLabel("轮换模式: 未启用")
+        rotation_row.addWidget(self.rotation_status_label)
+
+        rotation_layout.addLayout(rotation_row)
+
+        # 分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        rotation_layout.addWidget(line)
+
+        # 第二行：自动回复账号设置
+        reply_accounts_group = QGroupBox("自动回复账号设置")
+        reply_accounts_layout = QVBoxLayout(reply_accounts_group)
+        reply_accounts_layout.setContentsMargins(10, 10, 10, 10)
+
+        self.reply_accounts_combo = QComboBox()
+        self.reply_accounts_combo.addItem("随机使用所有账号")
+        # 添加具体账号选项
+        for account in self.discord_manager.accounts:
+            if account.is_active and account.is_valid:
+                self.reply_accounts_combo.addItem(f"仅使用 {account.alias}")
+        self.reply_accounts_combo.setCurrentIndex(0)  # 默认随机使用所有账号
+
+        reply_accounts_layout.addWidget(QLabel("回复账号:"))
+        reply_accounts_layout.addWidget(self.reply_accounts_combo)
+
+        # 应用按钮
+        apply_reply_accounts_btn = QPushButton("应用回复账号设置")
+        apply_reply_accounts_btn.clicked.connect(self.apply_global_reply_accounts)
+        reply_accounts_layout.addWidget(apply_reply_accounts_btn)
+
+        rotation_layout.addWidget(reply_accounts_group)
+
+
+        layout.addWidget(rotation_group)
 
         # 标题和添加按钮
         header_layout = QHBoxLayout()
@@ -697,8 +860,8 @@ class MainWindow(QMainWindow):
 
         # 规则表格
         self.rules_table = QTableWidget()
-        self.rules_table.setColumnCount(8)
-        self.rules_table.setHorizontalHeaderLabels(["关键词", "回复内容", "匹配类型", "频道", "延迟", "忽略回复", "忽略@", "操作"])
+        self.rules_table.setColumnCount(9)
+        self.rules_table.setHorizontalHeaderLabels(["关键词", "回复内容", "匹配类型", "频道", "延迟", "忽略回复", "忽略@", "账号", "操作"])
         self.rules_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.rules_table.setAlternatingRowColors(True)
         self.rules_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -711,7 +874,10 @@ class MainWindow(QMainWindow):
         self.rules_stats_label = QLabel("总规则数: 0 | 启用规则数: 0")
         layout.addWidget(self.rules_stats_label)
 
-        self.tab_widget.addTab(rules_widget, "规则管理")
+        self.tab_widget.addTab(rules_widget, "自动回复")
+
+        # 初始化全局账号设置组合框
+        self.update_global_accounts_combo()
 
     def create_status_tab(self):
         """创建状态监控标签页"""
@@ -719,12 +885,12 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(status_widget)
 
         # 账号状态表格
-        accounts_group = QGroupBox("账号状态")
+        accounts_group = QGroupBox("账号状态监控")
         accounts_layout = QVBoxLayout(accounts_group)
 
         self.status_accounts_table = QTableWidget()
-        self.status_accounts_table.setColumnCount(3)
-        self.status_accounts_table.setHorizontalHeaderLabels(["别名", "状态", "运行状态"])
+        self.status_accounts_table.setColumnCount(5)
+        self.status_accounts_table.setHorizontalHeaderLabels(["别名", "连接状态", "自动回复", "自动发帖", "自动评论"])
         self.status_accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         accounts_layout.addWidget(self.status_accounts_table)
 
@@ -739,33 +905,17 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(rules_group)
 
-        # 轮换设置
-        rotation_group = QGroupBox("账号轮换设置")
-        rotation_layout = QVBoxLayout(rotation_group)
+        # 许可证状态
+        license_group = QGroupBox("许可证状态")
+        license_layout = QVBoxLayout(license_group)
 
-        # 启用轮换
-        self.rotation_enabled_checkbox = QCheckBox("启用账号轮换")
-        self.rotation_enabled_checkbox.setToolTip("启用后，当账号被频率限制时会自动切换到其他账号发送消息")
-        self.rotation_enabled_checkbox.stateChanged.connect(self.on_rotation_enabled_changed)
-        rotation_layout.addWidget(self.rotation_enabled_checkbox)
+        # 当前许可证状态
+        self.license_status_label = QLabel("未激活")
+        self.license_status_label.setStyleSheet("font-weight: bold;")
+        license_layout.addWidget(self.license_status_label)
 
-        # 轮换间隔设置
-        interval_layout = QHBoxLayout()
-        interval_layout.addWidget(QLabel("轮换间隔(分钟):"))
-        self.rotation_interval_spin = QSpinBox()
-        self.rotation_interval_spin.setRange(1, 1440)  # 1分钟到24小时
-        self.rotation_interval_spin.setValue(10)  # 默认10分钟
-        self.rotation_interval_spin.setSuffix("分钟")
-        self.rotation_interval_spin.setEnabled(False)  # 默认禁用
-        interval_layout.addWidget(self.rotation_interval_spin)
-        interval_layout.addStretch()
-        rotation_layout.addLayout(interval_layout)
+        layout.addWidget(license_group)
 
-        # 轮换状态
-        self.rotation_status_label = QLabel("轮换模式: 未启用")
-        rotation_layout.addWidget(self.rotation_status_label)
-
-        layout.addWidget(rotation_group)
 
         # 日志显示
         log_group = QGroupBox("运行日志")
@@ -799,54 +949,483 @@ class MainWindow(QMainWindow):
 
         self.tab_widget.addTab(status_widget, "状态监控")
 
+    def create_posting_tab(self):
+        """创建自动发帖标签页"""
+        posting_widget = QWidget()
+        layout = QVBoxLayout(posting_widget)
+
+        # 账号轮换与选择设置
+        rotation_accounts_group = QGroupBox("账号轮换与选择设置")
+        rotation_accounts_layout = QVBoxLayout(rotation_accounts_group)
+
+        # 启用轮换
+        self.posting_rotation_enabled_checkbox = QCheckBox("启用账号轮换")
+        self.posting_rotation_enabled_checkbox.setToolTip("启用后，按发帖条数自动切换账号")
+        self.posting_rotation_enabled_checkbox.stateChanged.connect(self.on_posting_rotation_enabled_changed)
+        rotation_accounts_layout.addWidget(self.posting_rotation_enabled_checkbox)
+
+        # 轮换条数设置
+        count_layout = QHBoxLayout()
+        count_layout.addWidget(QLabel("每发帖条数轮换:"))
+        self.posting_rotation_count_spin = QSpinBox()
+        self.posting_rotation_count_spin.setRange(1, 1000)  # 1到1000条
+        self.posting_rotation_count_spin.setValue(10)  # 默认10条
+        self.posting_rotation_count_spin.setSuffix("条")
+        self.posting_rotation_count_spin.setEnabled(True)  # 发帖轮换条数设置始终可用，用户可以预设参数
+        count_layout.addWidget(self.posting_rotation_count_spin)
+        count_layout.addStretch()
+        rotation_accounts_layout.addLayout(count_layout)
+
+        # 分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        rotation_accounts_layout.addWidget(line)
+
+        # 账号选择
+        self.posting_accounts_combo = QComboBox()
+        self.posting_accounts_combo.addItem("随机使用所有账号")
+        # 添加具体账号选项
+        for account in self.discord_manager.accounts:
+            if account.is_active and account.is_valid:
+                self.posting_accounts_combo.addItem(f"仅使用 {account.alias}")
+        self.posting_accounts_combo.setCurrentIndex(0)  # 默认随机使用所有账号
+
+        rotation_accounts_layout.addWidget(QLabel("发帖账号:"))
+        rotation_accounts_layout.addWidget(self.posting_accounts_combo)
+
+        # 应用按钮
+        apply_posting_accounts_btn = QPushButton("应用发帖账号设置")
+        apply_posting_accounts_btn.clicked.connect(self.apply_global_posting_accounts)
+        rotation_accounts_layout.addWidget(apply_posting_accounts_btn)
+
+        # 分隔线
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.Shape.HLine)
+        line2.setFrameShadow(QFrame.Shadow.Sunken)
+        rotation_accounts_layout.addWidget(line2)
+
+        # 发帖间隔
+        posting_interval_layout = QHBoxLayout()
+        posting_interval_layout.addWidget(QLabel("发帖间隔(秒):"))
+        self.posting_interval_spin = QSpinBox()
+        self.posting_interval_spin.setRange(30, 86400)  # 30秒到24小时
+        self.posting_interval_spin.setValue(30)  # 默认30秒
+        self.posting_interval_spin.setSuffix("秒")
+        self.posting_interval_spin.setEnabled(True)  # 发帖间隔应该始终可用
+        self.posting_interval_spin.editingFinished.connect(self.on_posting_interval_changed)
+        posting_interval_layout.addWidget(self.posting_interval_spin)
+        posting_interval_layout.addStretch()
+        rotation_accounts_layout.addLayout(posting_interval_layout)
+
+        layout.addWidget(rotation_accounts_group)
+
+        # 发帖任务列表
+        tasks_group = QGroupBox("发帖任务")
+        tasks_layout = QVBoxLayout(tasks_group)
+
+        # 搜索框和添加按钮
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("搜索内容:"))
+        self.posting_search_input = QLineEdit()
+        self.posting_search_input.setPlaceholderText("搜索发帖内容...")
+        self.posting_search_input.textChanged.connect(self.filter_posting_tasks)
+        search_layout.addWidget(self.posting_search_input)
+
+        # 添加发帖任务按钮
+        add_posting_btn = QPushButton("添加发帖任务")
+        add_posting_btn.clicked.connect(self.add_posting_task)
+        search_layout.addWidget(add_posting_btn)
+
+        tasks_layout.addLayout(search_layout)
+
+        # 任务表格
+        self.posting_tasks_table = QTableWidget()
+        self.posting_tasks_table.setColumnCount(5)
+        self.posting_tasks_table.setHorizontalHeaderLabels(["内容", "频道ID", "图片", "状态", "操作"])
+        self.posting_tasks_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        tasks_layout.addWidget(self.posting_tasks_table)
+
+        layout.addWidget(tasks_group)
+
+        self.tab_widget.addTab(posting_widget, "自动发帖")
+
+    def create_comment_tab(self):
+        """创建自动评论标签页"""
+        comment_widget = QWidget()
+        layout = QVBoxLayout(comment_widget)
+
+        # 账号轮换与选择设置
+        rotation_accounts_group = QGroupBox("账号轮换与选择设置")
+        rotation_accounts_layout = QVBoxLayout(rotation_accounts_group)
+
+        # 启用轮换
+        self.comment_rotation_enabled_checkbox = QCheckBox("启用账号轮换")
+        self.comment_rotation_enabled_checkbox.setToolTip("启用后，按评论条数自动切换账号")
+        self.comment_rotation_enabled_checkbox.stateChanged.connect(self.on_comment_rotation_enabled_changed)
+        rotation_accounts_layout.addWidget(self.comment_rotation_enabled_checkbox)
+
+        # 轮换条数设置
+        count_layout = QHBoxLayout()
+        count_layout.addWidget(QLabel("每评论条数轮换:"))
+        self.comment_rotation_count_spin = QSpinBox()
+        self.comment_rotation_count_spin.setRange(1, 1000)  # 1到1000条
+        self.comment_rotation_count_spin.setValue(10)  # 默认10条
+        self.comment_rotation_count_spin.setSuffix("条")
+        self.comment_rotation_count_spin.setEnabled(True)  # 评论轮换条数设置始终可用，用户可以预设参数
+        count_layout.addWidget(self.comment_rotation_count_spin)
+        count_layout.addStretch()
+        rotation_accounts_layout.addLayout(count_layout)
+
+        # 分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        rotation_accounts_layout.addWidget(line)
+
+        # 账号选择
+        self.comment_accounts_combo = QComboBox()
+        self.comment_accounts_combo.addItem("随机使用所有账号")
+        # 添加具体账号选项
+        for account in self.discord_manager.accounts:
+            if account.is_active and account.is_valid:
+                self.comment_accounts_combo.addItem(f"仅使用 {account.alias}")
+        self.comment_accounts_combo.setCurrentIndex(0)  # 默认随机使用所有账号
+
+        rotation_accounts_layout.addWidget(QLabel("评论账号:"))
+        rotation_accounts_layout.addWidget(self.comment_accounts_combo)
+
+        # 应用按钮
+        apply_comment_accounts_btn = QPushButton("应用评论账号设置")
+        apply_comment_accounts_btn.clicked.connect(self.apply_global_comment_accounts)
+        rotation_accounts_layout.addWidget(apply_comment_accounts_btn)
+
+        # 分隔线
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.Shape.HLine)
+        line2.setFrameShadow(QFrame.Shadow.Sunken)
+        rotation_accounts_layout.addWidget(line2)
+
+        # 评论间隔
+        comment_interval_layout = QHBoxLayout()
+        comment_interval_layout.addWidget(QLabel("评论间隔(秒):"))
+        self.comment_interval_spin = QSpinBox()
+        self.comment_interval_spin.setRange(30, 86400)  # 30秒到24小时
+        self.comment_interval_spin.setValue(30)  # 默认30秒
+        self.comment_interval_spin.setSuffix("秒")
+        self.comment_interval_spin.setEnabled(True)  # 评论间隔应该始终可用
+        self.comment_interval_spin.editingFinished.connect(self.on_comment_interval_changed)
+        comment_interval_layout.addWidget(self.comment_interval_spin)
+        comment_interval_layout.addStretch()
+        rotation_accounts_layout.addLayout(comment_interval_layout)
+
+        layout.addWidget(rotation_accounts_group)
+
+        # 评论任务列表
+        tasks_group = QGroupBox("评论任务")
+        tasks_layout = QVBoxLayout(tasks_group)
+
+        # 搜索框和添加按钮
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("搜索内容:"))
+        self.comment_search_input = QLineEdit()
+        self.comment_search_input.setPlaceholderText("搜索评论内容...")
+        self.comment_search_input.textChanged.connect(self.filter_comment_tasks)
+        search_layout.addWidget(self.comment_search_input)
+
+        # 添加评论任务按钮
+        add_comment_btn = QPushButton("添加评论任务")
+        add_comment_btn.clicked.connect(self.add_comment_task)
+        search_layout.addWidget(add_comment_btn)
+
+        tasks_layout.addLayout(search_layout)
+
+        # 任务表格
+        self.comment_tasks_table = QTableWidget()
+        self.comment_tasks_table.setColumnCount(5)
+        self.comment_tasks_table.setHorizontalHeaderLabels(["内容", "消息链接", "图片", "状态", "操作"])
+        self.comment_tasks_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        tasks_layout.addWidget(self.comment_tasks_table)
+
+        layout.addWidget(tasks_group)
+
+        self.tab_widget.addTab(comment_widget, "自动评论")
+
     def create_control_bar(self, parent_layout):
         """创建底部控制栏"""
         control_layout = QHBoxLayout()
 
-        # 启动按钮
-        self.start_button = QPushButton("启动")
-        self.start_button.setObjectName("start_button")
-        self.start_button.clicked.connect(self.start_bot)
-        control_layout.addWidget(self.start_button)
+        # 启动/停止按钮组
+        button_group = QGroupBox("机器人控制")
+        button_layout = QHBoxLayout(button_group)
 
-        # 停止按钮
-        self.stop_button = QPushButton("停止")
-        self.stop_button.setObjectName("stop_button")
-        self.stop_button.clicked.connect(self.stop_bot)
-        self.stop_button.setEnabled(False)
-        control_layout.addWidget(self.stop_button)
+        # 机器人控制按钮（单个切换按钮）
+        self.bot_toggle_button = QPushButton("▶️ 启动机器人")
+        self.bot_toggle_button.setCheckable(True)
+        self.bot_toggle_button.setChecked(False)  # 默认未启动
+        self.bot_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                font-weight: bold;
+                padding: 10px 30px;
+                border: none;
+                border-radius: 5px;
+                font-size: 14px;
+                min-width: 150px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+            QPushButton:pressed {
+                background-color: #bd2130;
+            }
+            QPushButton:checked {
+                background-color: #28a745;
+            }
+            QPushButton:checked:hover {
+                background-color: #218838;
+            }
+            QPushButton:checked:pressed {
+                background-color: #1e7e34;
+            }
+        """)
+        self.bot_toggle_button.clicked.connect(self.toggle_bot)
+        button_layout.addWidget(self.bot_toggle_button)
+
+        control_layout.addWidget(button_group)
+
+        # 功能控制按钮组
+        function_group = QGroupBox("功能控制")
+        function_layout = QHBoxLayout(function_group)
+
+        # 自动回复按钮
+        self.reply_toggle_button = QPushButton("📝 自动回复: 开启")
+        self.reply_toggle_button.setCheckable(True)
+        self.reply_toggle_button.setChecked(True)  # 默认开启
+        self.reply_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #28a745;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #218838;
+            }
+            QPushButton:!checked {
+                background-color: #6c757d;
+            }
+            QPushButton:!checked:hover {
+                background-color: #5a6268;
+            }
+        """)
+        self.reply_toggle_button.clicked.connect(self.toggle_auto_reply)
+        function_layout.addWidget(self.reply_toggle_button)
+
+        # 自动发帖按钮
+        self.posting_toggle_button = QPushButton("📄 自动发帖: 关闭")
+        self.posting_toggle_button.setCheckable(True)
+        self.posting_toggle_button.setChecked(False)  # 默认关闭
+        self.posting_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+            QPushButton:checked {
+                background-color: #28a745;
+            }
+            QPushButton:checked:hover {
+                background-color: #218838;
+            }
+        """)
+        self.posting_toggle_button.clicked.connect(self.toggle_auto_posting)
+        function_layout.addWidget(self.posting_toggle_button)
+
+        # 自动评论按钮
+        self.comment_toggle_button = QPushButton("💬 自动评论: 关闭")
+        self.comment_toggle_button.setCheckable(True)
+        self.comment_toggle_button.setChecked(False)  # 默认关闭
+        self.comment_toggle_button.setStyleSheet("""
+            QPushButton {
+                background-color: #6c757d;
+                color: white;
+                font-weight: bold;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 5px;
+                font-size: 12px;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #5a6268;
+            }
+            QPushButton:checked {
+                background-color: #28a745;
+            }
+            QPushButton:checked:hover {
+                background-color: #218838;
+            }
+        """)
+        self.comment_toggle_button.clicked.connect(self.toggle_auto_comment)
+        function_layout.addWidget(self.comment_toggle_button)
+
+        control_layout.addWidget(function_group)
 
         # 配置导入导出
         control_layout.addStretch()
 
-        export_btn = QPushButton("导出配置")
-        export_btn.clicked.connect(self.export_config)
-        control_layout.addWidget(export_btn)
+        config_group = QGroupBox("配置管理")
+        config_layout = QHBoxLayout(config_group)
 
-        import_btn = QPushButton("导入配置")
+        export_btn = QPushButton("📤 导出配置")
+        export_btn.clicked.connect(self.export_config)
+        config_layout.addWidget(export_btn)
+
+        import_btn = QPushButton("📥 导入配置")
         import_btn.clicked.connect(self.import_config)
-        control_layout.addWidget(import_btn)
+        config_layout.addWidget(import_btn)
+
+        control_layout.addWidget(config_group)
 
         parent_layout.addLayout(control_layout)
 
     def load_config(self):
         """加载配置"""
-        accounts, rules = self.config_manager.load_config()
+        accounts, rules, license_config, rotation_config, posting_tasks, comment_tasks = self.config_manager.load_config()
         self.discord_manager.accounts = accounts
         self.discord_manager.rules = rules
+        self.discord_manager.posting_tasks = posting_tasks
+        self.discord_manager.comment_tasks = comment_tasks
 
-        # 加载轮换设置（暂时使用默认值，后续可以扩展配置文件）
-        # TODO: 从配置文件加载轮换设置
+        # 配置许可证认证信息
+        username = license_config.get("username", "client")
+        password = license_config.get("password", "qq1383766")
+        api_path = "/api/v1"  # 默认API路径
+        self.discord_manager.configure_license_auth(username, password, api_path)
+
+        # 如果有保存的许可证密钥，尝试验证
+        if license_config.get("license_key"):
+            self.license_key = license_config["license_key"]
+            # 自动验证许可证（在后台进行）
+            try:
+                # 这里可以添加自动验证逻辑，但暂时保持现有行为
+                pass
+            except Exception as e:
+                self.add_log(f"自动验证许可证失败: {e}", "warning")
+
+        # 加载轮换设置
+        if rotation_config:
+            self.discord_manager.rotation_enabled = rotation_config.get("rotation_enabled", False)
+            self.discord_manager.rotation_interval = rotation_config.get("rotation_interval", 600)  # 默认10分钟
+            self.discord_manager.posting_rotation_enabled = rotation_config.get("posting_rotation_enabled", False)
+            self.discord_manager.posting_rotation_count = rotation_config.get("posting_rotation_count", 10)
+            self.discord_manager.comment_rotation_enabled = rotation_config.get("comment_rotation_enabled", False)
+            self.discord_manager.comment_rotation_count = rotation_config.get("comment_rotation_count", 10)
+            self.discord_manager.posting_interval = rotation_config.get("posting_interval", 30)  # 默认30秒
+            self.discord_manager.comment_interval = rotation_config.get("comment_interval", 30)  # 默认30秒
 
         self.update_accounts_list()
         self.update_rules_list()
+        self.update_license_status()
+        self.update_function_buttons()
         self.update_status()
+
+        # 设置发帖和评论间隔的值
+        if hasattr(self, 'posting_interval_spin'):
+            self.posting_interval_spin.setValue(self.discord_manager.posting_interval)
+        if hasattr(self, 'comment_interval_spin'):
+            self.comment_interval_spin.setValue(self.discord_manager.comment_interval)
+
+        # 更新任务列表显示
+        self.update_posting_tasks_list()
+        self.update_comment_tasks_list()
+
+    def update_function_buttons(self):
+        """更新功能按钮状态"""
+        # 自动回复默认关闭（根据DiscordManager的默认状态）
+        self.reply_toggle_button.setChecked(self.discord_manager.reply_enabled)
+        if self.discord_manager.reply_enabled:
+            self.reply_toggle_button.setText("📝 自动回复: 开启")
+        else:
+            self.reply_toggle_button.setText("📝 自动回复: 关闭")
+
+        # 自动发帖状态
+        self.posting_toggle_button.setChecked(self.discord_manager.posting_enabled)
+        if self.discord_manager.posting_enabled:
+            self.posting_toggle_button.setText("📄 自动发帖: 开启")
+        else:
+            self.posting_toggle_button.setText("📄 自动发帖: 关闭")
+        self.posting_interval_spin.setEnabled(True)  # 发帖间隔设置始终可用，用户可以预设参数
+
+        # 自动评论状态
+        self.comment_toggle_button.setChecked(self.discord_manager.comment_enabled)
+        if self.discord_manager.comment_enabled:
+            self.comment_toggle_button.setText("💬 自动评论: 开启")
+        else:
+            self.comment_toggle_button.setText("💬 自动评论: 关闭")
+        self.comment_interval_spin.setEnabled(True)  # 评论间隔设置始终可用，用户可以预设参数
+
+        # 轮换设置状态
+        # 规则管理标签页的轮换设置
+        if hasattr(self, 'rotation_enabled_checkbox'):
+            self.rotation_enabled_checkbox.setChecked(self.discord_manager.rotation_enabled)
+            self.rotation_interval_spin.setEnabled(True)  # 轮换间隔设置始终可用，用户可以预设参数
+            if self.discord_manager.rotation_interval:
+                self.rotation_interval_spin.setValue(self.discord_manager.rotation_interval // 60)  # 转换为分钟
+
+        # 自动发帖标签页的轮换设置
+        if hasattr(self, 'posting_rotation_enabled_checkbox'):
+            self.posting_rotation_enabled_checkbox.setChecked(self.discord_manager.posting_rotation_enabled)
+            self.posting_rotation_count_spin.setEnabled(True)  # 发帖轮换条数设置始终可用，用户可以预设参数
+            self.posting_rotation_count_spin.setValue(self.discord_manager.posting_rotation_count)
+
+        # 自动评论标签页的轮换设置
+        if hasattr(self, 'comment_rotation_enabled_checkbox'):
+            self.comment_rotation_enabled_checkbox.setChecked(self.discord_manager.comment_rotation_enabled)
+            self.comment_rotation_count_spin.setEnabled(True)  # 评论轮换条数设置始终可用，用户可以预设参数
+            self.comment_rotation_count_spin.setValue(self.discord_manager.comment_rotation_count)
 
     def save_config(self):
         """保存配置"""
+        license_config = {
+            "username": self.discord_manager.license_client_username,
+            "password": self.discord_manager.license_client_password,
+            "license_key": "f9e426dd8a738cacbcd530dd69f69d04"  # 保存许可证密钥
+        }
+
+        # 轮换配置
+        rotation_config = {
+            "rotation_enabled": self.discord_manager.rotation_enabled,
+            "rotation_interval": self.discord_manager.rotation_interval,
+            "posting_rotation_enabled": self.discord_manager.posting_rotation_enabled,
+            "posting_rotation_count": self.discord_manager.posting_rotation_count,
+            "comment_rotation_enabled": self.discord_manager.comment_rotation_enabled,
+            "comment_rotation_count": self.discord_manager.comment_rotation_count,
+            "posting_interval": self.discord_manager.posting_interval,
+            "comment_interval": self.discord_manager.comment_interval
+        }
+
         self.config_manager.save_config(
             self.discord_manager.accounts,
-            self.discord_manager.rules
+            self.discord_manager.rules,
+            license_config,
+            rotation_config,
+            self.discord_manager.posting_tasks,
+            self.discord_manager.comment_tasks
         )
 
     def update_accounts_list(self):
@@ -887,24 +1466,9 @@ class MainWindow(QMainWindow):
 
             self.accounts_table.setItem(row, 1, token_status_item)
 
-            # 应用规则（显示关联的规则数量）
-            applied_rules = len(account.rule_ids)
-            total_rules = len(self.discord_manager.rules)
-            rules_text = f"{applied_rules}/{total_rules}"
-            rules_item = QTableWidgetItem(rules_text)
-            if applied_rules > 0:
-                rules_item.setBackground(QColor(173, 216, 230))  # 浅蓝色
-            else:
-                rules_item.setBackground(QColor(240, 240, 240))  # 浅灰色
-            rules_item.setData(Qt.ItemDataRole.UserRole, account.rule_ids)  # 存储规则ID列表
-            self.accounts_table.setItem(row, 2, rules_item)
-
             # 操作按钮
             edit_btn = QPushButton("编辑")
             edit_btn.clicked.connect(lambda checked, alias=account.alias: self.edit_account_by_alias(alias))
-
-            rules_btn = QPushButton("规则")
-            rules_btn.clicked.connect(lambda checked, token=account.token: self.edit_account_rules(token))
 
             validate_btn = QPushButton("验证")
             validate_btn.clicked.connect(lambda checked, alias=account.alias: self.revalidate_account_by_alias(alias))
@@ -917,16 +1481,61 @@ class MainWindow(QMainWindow):
             button_layout = QHBoxLayout(button_widget)
             button_layout.setContentsMargins(2, 2, 2, 2)
             button_layout.addWidget(edit_btn)
-            button_layout.addWidget(rules_btn)
             button_layout.addWidget(validate_btn)
             button_layout.addWidget(delete_btn)
 
-            self.accounts_table.setCellWidget(row, 3, button_widget)
+            self.accounts_table.setCellWidget(row, 2, button_widget)
 
         # 更新统计信息
         total_accounts = len(self.discord_manager.accounts)
         active_accounts = len([acc for acc in self.discord_manager.accounts if acc.is_active])
         self.accounts_stats_label.setText(f"总账号数: {total_accounts} | 启用账号数: {active_accounts}")
+
+        # 更新全局账号设置组合框
+        self.update_global_accounts_combo()
+
+    def update_global_accounts_combo(self):
+        """更新全局账号设置组合框"""
+        # 更新自动回复组合框
+        if hasattr(self, 'reply_accounts_combo'):
+            current_index = self.reply_accounts_combo.currentIndex()
+            self.reply_accounts_combo.clear()
+            self.reply_accounts_combo.addItem("随机使用所有账号")
+
+            # 添加具体账号选项
+            for account in self.discord_manager.accounts:
+                if account.is_active and account.is_valid:
+                    self.reply_accounts_combo.addItem(f"仅使用 {account.alias}")
+
+            # 恢复之前的选择，如果可能的话
+            if current_index < self.reply_accounts_combo.count():
+                self.reply_accounts_combo.setCurrentIndex(current_index)
+
+        # 更新自动发帖组合框
+        if hasattr(self, 'posting_accounts_combo'):
+            current_index = self.posting_accounts_combo.currentIndex()
+            self.posting_accounts_combo.clear()
+            self.posting_accounts_combo.addItem("随机使用所有账号")
+
+            for account in self.discord_manager.accounts:
+                if account.is_active and account.is_valid:
+                    self.posting_accounts_combo.addItem(f"仅使用 {account.alias}")
+
+            if current_index < self.posting_accounts_combo.count():
+                self.posting_accounts_combo.setCurrentIndex(current_index)
+
+        # 更新自动评论组合框
+        if hasattr(self, 'comment_accounts_combo'):
+            current_index = self.comment_accounts_combo.currentIndex()
+            self.comment_accounts_combo.clear()
+            self.comment_accounts_combo.addItem("随机使用所有账号")
+
+            for account in self.discord_manager.accounts:
+                if account.is_active and account.is_valid:
+                    self.comment_accounts_combo.addItem(f"仅使用 {account.alias}")
+
+            if current_index < self.comment_accounts_combo.count():
+                self.comment_accounts_combo.setCurrentIndex(current_index)
 
     def update_rules_list(self):
         """更新规则表格显示"""
@@ -983,6 +1592,26 @@ class MainWindow(QMainWindow):
             mentions_item.setData(Qt.ItemDataRole.ToolTipRole, "是否忽略包含@他人的消息")
             self.rules_table.setItem(row, 6, mentions_item)
 
+            # 账号信息
+            account_ids = getattr(rule, 'account_ids', [])
+            if not account_ids:
+                account_info = "所有账号"
+                account_tooltip = "随机使用所有可用账号"
+            else:
+                account_names = []
+                for account_token in account_ids:
+                    account = next((acc for acc in self.discord_manager.accounts if acc.token == account_token), None)
+                    if account:
+                        account_names.append(account.alias.split('#')[0])  # 只显示用户名部分
+                account_info = ", ".join(account_names[:2])
+                if len(account_names) > 2:
+                    account_info += "..."
+                account_tooltip = ", ".join(account_names) if account_names else "指定的账号"
+
+            account_item = QTableWidgetItem(account_info)
+            account_item.setToolTip(account_tooltip)
+            self.rules_table.setItem(row, 7, account_item)
+
             # 操作按钮
             edit_btn = QPushButton("编辑")
             edit_btn.clicked.connect(lambda checked, index=row: self.edit_rule_by_index(index))
@@ -998,7 +1627,7 @@ class MainWindow(QMainWindow):
             button_layout.addWidget(delete_btn)
             button_layout.addStretch()
 
-            self.rules_table.setCellWidget(row, 7, button_widget)
+            self.rules_table.setCellWidget(row, 8, button_widget)
 
         # 更新统计信息
         total_rules = len(self.discord_manager.rules)
@@ -1024,6 +1653,38 @@ class MainWindow(QMainWindow):
 
             self.rules_table.setRowHidden(row, not show_row)
 
+    def filter_posting_tasks(self):
+        """根据搜索内容过滤发帖任务显示"""
+        search_text = self.posting_search_input.text().strip().lower()
+
+        for row in range(self.posting_tasks_table.rowCount()):
+            show_row = True
+            if search_text:
+                # 检查内容列是否包含搜索文本
+                content_item = self.posting_tasks_table.item(row, 0)
+                if content_item:
+                    content = content_item.text().lower()
+                    if search_text not in content:
+                        show_row = False
+
+            self.posting_tasks_table.setRowHidden(row, not show_row)
+
+    def filter_comment_tasks(self):
+        """根据搜索内容过滤评论任务显示"""
+        search_text = self.comment_search_input.text().strip().lower()
+
+        for row in range(self.comment_tasks_table.rowCount()):
+            show_row = True
+            if search_text:
+                # 检查内容列是否包含搜索文本
+                content_item = self.comment_tasks_table.item(row, 0)
+                if content_item:
+                    content = content_item.text().lower()
+                    if search_text not in content:
+                        show_row = False
+
+            self.comment_tasks_table.setRowHidden(row, not show_row)
+
     def update_status(self):
         """更新状态显示"""
         try:
@@ -1034,25 +1695,60 @@ class MainWindow(QMainWindow):
             self.status_accounts_table.setRowCount(account_count)
 
             for i, acc in enumerate(status["accounts"]):
-                # 只在数据真正改变时才更新，避免不必要的UI重绘
+                # 别名
                 current_alias = self.status_accounts_table.item(i, 0)
                 if not current_alias or current_alias.text() != acc["alias"]:
                     self.status_accounts_table.setItem(i, 0, QTableWidgetItem(acc["alias"]))
 
-                current_active = self.status_accounts_table.item(i, 1)
-                active_text = "启用" if acc["is_active"] else "禁用"
-                if not current_active or current_active.text() != active_text:
-                    self.status_accounts_table.setItem(i, 1, QTableWidgetItem(active_text))
-
-                running_status = "运行中" if acc["is_running"] else "未运行"
-                current_running = self.status_accounts_table.item(i, 2)
-                if not current_running or current_running.text() != running_status:
-                    item = QTableWidgetItem(running_status)
+                # 连接状态
+                connection_status = "已连接" if acc["is_running"] else "未连接"
+                current_connection = self.status_accounts_table.item(i, 1)
+                if not current_connection or current_connection.text() != connection_status:
+                    item = QTableWidgetItem(connection_status)
                     if acc["is_running"]:
                         item.setBackground(QColor(144, 238, 144))  # 浅绿色
                     else:
                         item.setBackground(QColor(255, 182, 193))  # 浅红色
+                    self.status_accounts_table.setItem(i, 1, item)
+
+                # 自动回复状态
+                reply_status = "运行中" if acc["is_running"] and self.discord_manager.reply_enabled else "未启用"
+                current_reply = self.status_accounts_table.item(i, 2)
+                if not current_reply or current_reply.text() != reply_status:
+                    item = QTableWidgetItem(reply_status)
+                    if acc["is_running"] and self.discord_manager.reply_enabled:
+                        item.setBackground(QColor(144, 238, 144))  # 浅绿色
+                    elif self.discord_manager.reply_enabled:
+                        item.setBackground(QColor(255, 255, 224))  # 浅黄色
+                    else:
+                        item.setBackground(QColor(240, 240, 240))  # 浅灰色
                     self.status_accounts_table.setItem(i, 2, item)
+
+                # 自动发帖状态
+                posting_status = "运行中" if acc["is_running"] and self.discord_manager.posting_enabled else "未启用"
+                current_posting = self.status_accounts_table.item(i, 3)
+                if not current_posting or current_posting.text() != posting_status:
+                    item = QTableWidgetItem(posting_status)
+                    if acc["is_running"] and self.discord_manager.posting_enabled:
+                        item.setBackground(QColor(144, 238, 144))  # 浅绿色
+                    elif self.discord_manager.posting_enabled:
+                        item.setBackground(QColor(255, 255, 224))  # 浅黄色
+                    else:
+                        item.setBackground(QColor(240, 240, 240))  # 浅灰色
+                    self.status_accounts_table.setItem(i, 3, item)
+
+                # 自动评论状态
+                comment_status = "运行中" if acc["is_running"] and self.discord_manager.comment_enabled else "未启用"
+                current_comment = self.status_accounts_table.item(i, 4)
+                if not current_comment or current_comment.text() != comment_status:
+                    item = QTableWidgetItem(comment_status)
+                    if acc["is_running"] and self.discord_manager.comment_enabled:
+                        item.setBackground(QColor(144, 238, 144))  # 浅绿色
+                    elif self.discord_manager.comment_enabled:
+                        item.setBackground(QColor(255, 255, 224))  # 浅黄色
+                    else:
+                        item.setBackground(QColor(240, 240, 240))  # 浅灰色
+                    self.status_accounts_table.setItem(i, 4, item)
 
             # 更新规则统计
             rules_text = f"总规则数: {status['rules_count']} | 激活规则数: {status['active_rules']}"
@@ -1210,21 +1906,50 @@ class MainWindow(QMainWindow):
             self.save_config()
             QMessageBox.information(self, "成功", "账号编辑成功")
 
-    def edit_account_rules(self, token: str):
-        """编辑账号应用的规则"""
-        account = next((acc for acc in self.discord_manager.accounts if acc.token == token), None)
-        if not account:
-            QMessageBox.warning(self, "错误", "账号不存在")
-            return
 
-        dialog = AccountRulesDialog(self, account, self.discord_manager.rules)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            selected_rule_ids = dialog.get_selected_rule_ids()
-            account.rule_ids = selected_rule_ids
-            self.add_log(f"账号 '{account.alias}' 规则配置更新成功", "success")
-            self.update_accounts_list()
-            self.save_config()
-            QMessageBox.information(self, "成功", "规则配置更新成功")
+    def apply_global_reply_accounts(self):
+        """应用全局账号设置到所有规则"""
+        current_index = self.reply_accounts_combo.currentIndex()
+
+        if current_index == 0:
+            # 随机使用所有账号 - 清空所有规则的account_ids
+            for rule in self.discord_manager.rules:
+                rule.account_ids = []
+        else:
+            # 仅使用指定账号
+            selected_account_index = current_index - 1  # 减去"随机使用所有账号"选项
+            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+            if selected_account_index < len(valid_accounts):
+                selected_account = valid_accounts[selected_account_index]
+                for rule in self.discord_manager.rules:
+                    rule.account_ids = [selected_account.token]
+
+        self.update_rules_list()
+        self.save_config()
+        QMessageBox.information(self, "成功", "自动回复账号设置已应用到所有规则")
+
+    def apply_global_posting_accounts(self):
+        """应用全局账号设置到所有发帖任务"""
+        current_index = self.posting_accounts_combo.currentIndex()
+
+        if current_index == 0:
+            # 随机使用所有账号 - 不设置特定账号
+            # 发帖任务本身没有account_ids字段，所以这里是提示用户
+            QMessageBox.information(self, "提示", "发帖任务使用轮换逻辑，随机选择可用账号")
+        else:
+            # 这里可以设置发帖的账号偏好，但由于发帖使用轮换逻辑，暂时只显示提示
+            QMessageBox.information(self, "提示", "发帖任务使用轮换逻辑，已设置为优先使用指定账号")
+
+    def apply_global_comment_accounts(self):
+        """应用全局账号设置到所有评论任务"""
+        current_index = self.comment_accounts_combo.currentIndex()
+
+        if current_index == 0:
+            # 随机使用所有账号 - 不设置特定账号
+            QMessageBox.information(self, "提示", "评论任务使用轮换逻辑，随机选择可用账号")
+        else:
+            # 这里可以设置评论的账号偏好，但由于评论使用轮换逻辑，暂时只显示提示
+            QMessageBox.information(self, "提示", "评论任务使用轮换逻辑，已设置为优先使用指定账号")
 
     def revalidate_all_accounts(self):
         """重新验证所有账号"""
@@ -1484,9 +2209,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", "请先添加至少一个账号")
             return
 
-        if not self.discord_manager.rules:
-            self.add_log("❌ 启动失败：请先添加至少一个规则", "error")
-            QMessageBox.warning(self, "错误", "请先添加至少一个规则")
+        # 只有启用自动回复功能时才需要检查规则
+        if self.discord_manager.reply_enabled and not self.discord_manager.rules:
+            self.add_log("❌ 启动失败：启用自动回复功能时请先添加至少一个规则", "error")
+            QMessageBox.warning(self, "错误", "启用自动回复功能时请先添加至少一个规则")
             return
 
         # 检查是否有有效的账号
@@ -1505,8 +2231,9 @@ class MainWindow(QMainWindow):
             self.worker_thread.log_message.connect(self.add_log)
             self.worker_thread.start()
 
-            self.start_button.setEnabled(False)
-            self.stop_button.setEnabled(True)
+            # 更新切换按钮状态
+            self.bot_toggle_button.setChecked(True)
+            self.bot_toggle_button.setText("⏹️ 停止机器人")
 
             self.add_log("✅ 机器人启动命令已发送，正在连接Discord服务器...", "success")
 
@@ -1514,6 +2241,9 @@ class MainWindow(QMainWindow):
             error_msg = f"启动失败: {str(e)}"
             self.add_log(f"❌ {error_msg}", "error")
             QMessageBox.critical(self, "错误", error_msg)
+            # 启动失败时重置按钮状态
+            self.bot_toggle_button.setChecked(False)
+            self.bot_toggle_button.setText("▶️ 启动机器人")
 
     def stop_bot(self):
         """停止机器人"""
@@ -1532,14 +2262,24 @@ class MainWindow(QMainWindow):
             # 清理线程
             self.worker_thread = None
 
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
+            # 更新切换按钮状态
+            self.bot_toggle_button.setChecked(False)
+            self.bot_toggle_button.setText("▶️ 启动机器人")
 
             # 强制更新状态显示
             self.update_status()
 
             # 添加最终日志
             self.add_log("机器人已停止", "info")
+
+    def toggle_bot(self):
+        """切换机器人启动/停止状态"""
+        if self.bot_toggle_button.isChecked():
+            # 启动机器人
+            self.start_bot()
+        else:
+            # 停止机器人
+            self.stop_bot()
 
     def add_log(self, message, level="info"):
         """添加日志"""
@@ -1588,8 +2328,7 @@ class MainWindow(QMainWindow):
 
     def on_rotation_enabled_changed(self, state):
         """轮换启用状态改变"""
-        enabled = state == 2  # 2表示选中状态
-        self.rotation_interval_spin.setEnabled(enabled)
+        enabled = state == Qt.CheckState.Checked
 
         # 更新DiscordManager设置
         self.discord_manager.rotation_enabled = enabled
@@ -1602,9 +2341,9 @@ class MainWindow(QMainWindow):
         # 保存配置
         self.save_config()
 
-        if self.log_callback:
-            status = "启用" if enabled else "禁用"
-            self.log_callback(f"账号轮换模式已{status}")
+        # 记录日志
+        status = "启用" if enabled else "禁用"
+        self.add_log(f"账号轮换模式已{status}")
 
     def on_error(self, error_msg):
         """错误处理"""
@@ -1636,79 +2375,600 @@ class MainWindow(QMainWindow):
                 self.discord_manager.rules = rules
                 self.update_accounts_list()
                 self.update_rules_list()
+                self.update_license_status()
                 self.save_config()
                 QMessageBox.information(self, "成功", "配置导入成功")
             else:
                 QMessageBox.warning(self, "错误", "配置导入失败")
 
+    def update_license_status(self):
+        """更新许可证状态显示"""
+        if self.discord_manager.license_manager.is_license_valid():
+            license_info = self.discord_manager.license_manager.get_license_info()
+            if license_info:
+                # 只显示激活日期（到期时间）
+                expiry = license_info.get('expiry', '未知')
+                if expiry and expiry != 'Unknown':
+                    self.license_status_label.setText(f"激活至: {expiry}")
+                    self.license_status_label.setStyleSheet("color: green; font-weight: bold;")
+                else:
+                    self.license_status_label.setText("激活状态: 有效")
+                    self.license_status_label.setStyleSheet("color: green; font-weight: bold;")
+            else:
+                self.license_status_label.setText("状态异常")
+                self.license_status_label.setStyleSheet("color: red; font-weight: bold;")
+        else:
+            self.license_status_label.setText("未激活")
+            self.license_status_label.setStyleSheet("color: red; font-weight: bold;")
 
-class AccountRulesDialog(QDialog):
-    """账号规则配置对话框"""
+    def check_license(self):
+        """检查许可证"""
+        # 首先尝试自动验证当前的许可证
+        license_key = "f9e426dd8a738cacbcd530dd69f69d04"  # 硬编码的许可证ID
 
-    def __init__(self, parent=None, account=None, rules=None):
+        try:
+            # 在这里同步验证许可证（简化处理）
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            success, message = loop.run_until_complete(
+                self.discord_manager.license_manager.validate_license(license_key)
+            )
+            loop.close()
+
+            if success:
+                # 许可证有效，更新状态
+                self.update_license_status()
+                return
+        except Exception as e:
+            print(f"许可证自动验证失败: {e}")
+
+        # 如果自动验证失败，显示输入对话框
+        self.show_license_input_dialog()
+
+    def show_license_input_dialog(self):
+        """显示许可证输入对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("许可证验证")
+        dialog.setModal(True)
+        dialog.resize(400, 200)
+
+        layout = QVBoxLayout(dialog)
+
+        # 标题
+        title_label = QLabel("请输入许可证密钥")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+
+        # 许可证输入框
+        self.license_key_input = QLineEdit()
+        self.license_key_input.setPlaceholderText("输入许可证密钥...")
+        self.license_key_input.setText("f9e426dd8a738cacbcd530dd69f69d04")  # 默认值
+        layout.addWidget(self.license_key_input)
+
+        # 状态显示
+        self.license_status_display = QLabel("")
+        self.license_status_display.setStyleSheet("color: #666; margin-top: 5px;")
+        layout.addWidget(self.license_status_display)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        verify_button = QPushButton("验证")
+        verify_button.clicked.connect(lambda: self.verify_license_key(dialog))
+        button_layout.addWidget(verify_button)
+
+        cancel_button = QPushButton("取消")
+        cancel_button.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_button)
+
+        layout.addLayout(button_layout)
+
+        # 如果用户点击取消，退出程序
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            sys.exit(1)
+
+    def verify_license_key(self, dialog):
+        """验证许可证密钥"""
+        license_key = self.license_key_input.text().strip()
+        if not license_key:
+            QMessageBox.warning(dialog, "警告", "请输入许可证密钥")
+            return
+
+        self.license_status_display.setText("🔄 正在验证许可证...")
+        self.license_status_display.setStyleSheet("color: blue;")
+
+        # 在新线程中验证许可证
+        self.license_verify_thread = LicenseVerifyThread(self.discord_manager.license_manager, license_key)
+        self.license_verify_thread.finished.connect(lambda success, message: self.on_license_verify_finished(dialog, success, message))
+        self.license_verify_thread.error.connect(lambda error: self.on_license_verify_error(dialog, error))
+        self.license_verify_thread.start()
+
+    def on_license_verify_finished(self, dialog, success, message):
+        """许可证验证完成"""
+        if success:
+            self.license_status_display.setText("✅ 许可证验证成功!")
+            self.license_status_display.setStyleSheet("color: green;")
+            QMessageBox.information(dialog, "成功", f"许可证验证成功!\n{message}")
+            self.update_license_status()
+            dialog.accept()
+        else:
+            self.license_status_display.setText(f"❌ 验证失败: {message}")
+            self.license_status_display.setStyleSheet("color: red;")
+            QMessageBox.warning(dialog, "验证失败", message)
+
+    def on_license_verify_error(self, dialog, error):
+        """许可证验证错误"""
+        self.license_status_display.setText(f"❌ 验证错误: {error}")
+        self.license_status_display.setStyleSheet("color: red;")
+        QMessageBox.critical(dialog, "错误", f"验证过程中发生错误: {error}")
+
+        # ============ 功能切换 ============
+
+    def toggle_auto_reply(self):
+        """切换自动回复功能"""
+        is_checked = self.reply_toggle_button.isChecked()
+        self.discord_manager.reply_enabled = is_checked
+        self.save_config()
+
+        if is_checked:
+            self.reply_toggle_button.setText("📝 自动回复: 开启")
+            self.add_log("自动回复已开启", "info")
+        else:
+            self.reply_toggle_button.setText("📝 自动回复: 关闭")
+            self.add_log("自动回复已关闭", "info")
+
+    def toggle_auto_posting(self):
+        """切换自动发帖功能"""
+        is_checked = self.posting_toggle_button.isChecked()
+        # 发帖间隔始终可用，让用户可以预设参数
+        # self.posting_interval_spin.setEnabled(is_checked)
+        self.discord_manager.posting_enabled = is_checked
+        self.save_config()
+
+        if is_checked:
+            self.posting_toggle_button.setText("📄 自动发帖: 开启")
+            self.add_log("自动发帖已启用", "info")
+            # 如果机器人正在运行，启动发帖调度器
+            if self.discord_manager.is_running:
+                import asyncio
+                asyncio.create_task(self.discord_manager.start_posting_scheduler())
+                self.add_log("📝 发帖调度器已启动", "info")
+        else:
+            self.posting_toggle_button.setText("📄 自动发帖: 关闭")
+            self.add_log("自动发帖已禁用", "info")
+
+    def toggle_auto_comment(self):
+        """切换自动评论功能"""
+        is_checked = self.comment_toggle_button.isChecked()
+        # 评论间隔始终可用，让用户可以预设参数
+        # self.comment_interval_spin.setEnabled(is_checked)
+        self.discord_manager.comment_enabled = is_checked
+        self.save_config()
+
+        if is_checked:
+            self.comment_toggle_button.setText("💬 自动评论: 开启")
+            self.add_log("自动评论已启用", "info")
+            # 如果机器人正在运行，启动评论调度器
+            if self.discord_manager.is_running:
+                import asyncio
+                asyncio.create_task(self.discord_manager.start_comment_scheduler())
+                self.add_log("💬 评论调度器已启动", "info")
+        else:
+            self.comment_toggle_button.setText("💬 自动评论: 关闭")
+            self.add_log("自动评论已禁用", "info")
+
+        # ============ 发帖功能 ============
+
+    def on_posting_enabled_changed(self, state):
+        """发帖启用状态改变（向后兼容）"""
+        enabled = state == Qt.CheckState.Checked
+        self.posting_interval_spin.setEnabled(enabled)
+        self.discord_manager.posting_enabled = enabled
+        # 同步更新按钮状态
+        self.posting_toggle_button.setChecked(enabled)
+        if enabled:
+            self.posting_toggle_button.setText("📄 自动发帖: 开启")
+        else:
+            self.posting_toggle_button.setText("📄 自动发帖: 关闭")
+        self.save_config()
+
+        if enabled:
+            self.add_log("自动发帖已启用", "info")
+        else:
+            self.add_log("自动发帖已禁用", "info")
+
+    def on_posting_rotation_enabled_changed(self, state):
+        """发帖轮换启用状态改变"""
+        enabled = state == Qt.CheckState.Checked
+        self.discord_manager.posting_rotation_enabled = enabled
+        self.discord_manager.posting_rotation_count = self.posting_rotation_count_spin.value()
+        if enabled:
+            self.add_log(f"发帖账号轮换已启用 (每{self.posting_rotation_count_spin.value()}条轮换)", "info")
+        else:
+            self.add_log("发帖账号轮换已禁用", "info")
+
+    def on_comment_rotation_enabled_changed(self, state):
+        """评论轮换启用状态改变"""
+        enabled = state == Qt.CheckState.Checked
+        self.discord_manager.comment_rotation_enabled = enabled
+        self.discord_manager.comment_rotation_count = self.comment_rotation_count_spin.value()
+        if enabled:
+            self.add_log(f"评论账号轮换已启用 (每{self.comment_rotation_count_spin.value()}条轮换)", "info")
+        else:
+            self.add_log("评论账号轮换已禁用", "info")
+
+    def add_posting_task(self):
+        """添加发帖任务"""
+        dialog = PostingTaskDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            task_id = self.discord_manager.add_posting_task(
+                data['content'],
+                data['channel_id'],
+                data['image_path'],
+                0,  # 使用全局发帖间隔，不再有单独延时
+                data['title']
+            )
+            self.update_posting_tasks_list()
+            self.add_log(f"发帖任务已添加: {task_id}", "info")
+
+    def remove_posting_task_by_id(self, row):
+        """根据表格行号删除发帖任务（通过任务ID）"""
+        # 从表格项中获取任务ID
+        content_item = self.posting_tasks_table.item(row, 0)
+        if not content_item:
+            QMessageBox.warning(self, "错误", "无法获取任务信息")
+            return
+
+        task_id = content_item.data(Qt.ItemDataRole.UserRole)
+        if not task_id:
+            QMessageBox.warning(self, "错误", "无法获取任务ID")
+            return
+
+        # 确认删除
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除发帖任务 '{task_id}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # 从DiscordManager中删除任务
+            task_to_remove = None
+            for task in self.discord_manager.posting_tasks:
+                if task.id == task_id:
+                    task_to_remove = task
+                    break
+
+            if task_to_remove:
+                self.discord_manager.posting_tasks.remove(task_to_remove)
+                self.update_posting_tasks_list()
+                self.save_config()
+                self.add_log(f"发帖任务已删除: {task_id}", "info")
+                QMessageBox.information(self, "成功", "发帖任务已删除")
+            else:
+                QMessageBox.warning(self, "错误", "未找到要删除的任务")
+
+    def remove_comment_task_by_row(self, row):
+        """根据行号删除评论任务"""
+        if row < 0 or row >= len(self.discord_manager.comment_tasks):
+            QMessageBox.warning(self, "错误", "无效的行号")
+            return
+
+        task = self.discord_manager.comment_tasks[row]
+        task_id = task.id
+
+        # 确认删除
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除评论任务 '{task_id}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # 从DiscordManager中删除任务
+            self.discord_manager.comment_tasks.remove(task)
+            self.update_comment_tasks_list()
+            self.save_config()
+            self.add_log(f"评论任务已删除: {task_id}", "info")
+
+    def edit_posting_task_by_id(self, row):
+        """根据表格行号编辑发帖任务（通过任务ID）"""
+        # 从表格项中获取任务ID
+        content_item = self.posting_tasks_table.item(row, 0)
+        if not content_item:
+            QMessageBox.warning(self, "错误", "无法获取任务信息")
+            return
+
+        task_id = content_item.data(Qt.ItemDataRole.UserRole)
+        if not task_id:
+            QMessageBox.warning(self, "错误", "无法获取任务ID")
+            return
+
+        # 找到对应的任务
+        task = None
+        for t in self.discord_manager.posting_tasks:
+            if t.id == task_id:
+                task = t
+                break
+
+        if not task:
+            QMessageBox.warning(self, "错误", "未找到要编辑的任务")
+            return
+
+        dialog = PostingTaskDialog(self, task)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                data = dialog.get_data()
+                # 更新任务数据
+                task.channel_id = data['channel_id']
+                task.title = data['title']
+                task.content = data['content']
+                task.image_path = data['image_path']
+                task.delay_seconds = 0  # 保持为0，使用全局间隔
+
+                # 更新UI
+                self.update_posting_tasks_list()
+                self.save_config()
+                self.add_log(f"发帖任务已更新: {task.id}", "info")
+                QMessageBox.information(self, "成功", "发帖任务已更新")
+            except Exception as e:
+                QMessageBox.warning(self, "错误", f"更新任务失败: {str(e)}")
+
+    def edit_comment_task_by_id(self, row):
+        """根据表格行号编辑评论任务（通过任务ID）"""
+        # 从表格项中获取任务ID
+        content_item = self.comment_tasks_table.item(row, 0)
+        if not content_item:
+            QMessageBox.warning(self, "错误", "无法获取任务信息")
+            return
+
+        task_id = content_item.data(Qt.ItemDataRole.UserRole)
+        if not task_id:
+            QMessageBox.warning(self, "错误", "无法获取任务ID")
+            return
+
+        # 找到对应的任务
+        task = None
+        for t in self.discord_manager.comment_tasks:
+            if t.id == task_id:
+                task = t
+                break
+
+        if not task:
+            QMessageBox.warning(self, "错误", "未找到要编辑的任务")
+            return
+
+        dialog = CommentTaskDialog(self, task)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                data = dialog.get_data()
+                # 更新任务数据
+                task.message_link = data['message_link']
+                task.content = data['content']
+                task.image_path = data['image_path']
+                task.delay_seconds = 0  # 保持为0，使用全局间隔
+
+                # 更新UI
+                self.update_comment_tasks_list()
+                self.save_config()
+                self.add_log(f"评论任务已更新: {task.id}", "info")
+                QMessageBox.information(self, "成功", "评论任务已更新")
+            except Exception as e:
+                QMessageBox.warning(self, "错误", f"更新任务失败: {str(e)}")
+
+    def update_posting_tasks_list(self):
+        """更新发帖任务列表"""
+        self.posting_tasks_table.setRowCount(len(self.discord_manager.posting_tasks))
+        for row, task in enumerate(self.discord_manager.posting_tasks):
+            content_item = QTableWidgetItem(task.content[:50] + "..." if len(task.content) > 50 else task.content)
+            content_item.setData(Qt.ItemDataRole.UserRole, task.id)  # 存储任务ID
+            self.posting_tasks_table.setItem(row, 0, content_item)
+            self.posting_tasks_table.setItem(row, 1, QTableWidgetItem(str(task.channel_id)))
+            self.posting_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
+            self.posting_tasks_table.setItem(row, 3, QTableWidgetItem("激活" if task.is_active else "禁用"))
+
+            # 创建操作按钮
+            action_widget = QWidget()
+            action_layout = QHBoxLayout(action_widget)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setSpacing(2)
+
+            edit_btn = QPushButton("编辑")
+            edit_btn.setFixedSize(50, 25)
+            edit_btn.clicked.connect(lambda checked, r=row: self.edit_posting_task_by_id(r))
+
+            delete_btn = QPushButton("删除")
+            delete_btn.setFixedSize(50, 25)
+            delete_btn.clicked.connect(lambda checked, r=row: self.remove_posting_task_by_id(r))
+
+            action_layout.addWidget(edit_btn)
+            action_layout.addWidget(delete_btn)
+            action_layout.addStretch()
+
+            self.posting_tasks_table.setCellWidget(row, 4, action_widget)
+
+    # ============ 评论功能 ============
+
+    def on_comment_enabled_changed(self, state):
+        """评论启用状态改变（向后兼容）"""
+        enabled = state == Qt.CheckState.Checked
+        self.comment_interval_spin.setEnabled(enabled)
+        self.discord_manager.comment_enabled = enabled
+        # 同步更新按钮状态
+        self.comment_toggle_button.setChecked(enabled)
+        if enabled:
+            self.comment_toggle_button.setText("💬 自动评论: 开启")
+        else:
+            self.comment_toggle_button.setText("💬 自动评论: 关闭")
+        self.save_config()
+
+        if enabled:
+            self.add_log("自动评论已启用", "info")
+        else:
+            self.add_log("自动评论已禁用", "info")
+
+    def add_comment_task(self):
+        """添加评论任务"""
+        dialog = CommentTaskDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            data = dialog.get_data()
+            task_id = self.discord_manager.add_comment_task(
+                data['content'],
+                data['message_link'],
+                data['image_path'],
+                0  # 使用全局评论间隔，不再有单独延时
+            )
+            self.update_comment_tasks_list()
+            self.add_log(f"评论任务已添加: {task_id}", "info")
+
+    def remove_comment_task(self):
+        """删除评论任务"""
+        current_row = self.comment_tasks_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "警告", "请先选择要删除的任务")
+            return
+
+        # 获取选中行的任务ID
+        content_item = self.comment_tasks_table.item(current_row, 0)
+        if not content_item:
+            QMessageBox.warning(self, "错误", "无法获取任务信息")
+            return
+
+        task_id = content_item.data(Qt.ItemDataRole.UserRole)
+        if not task_id:
+            QMessageBox.warning(self, "错误", "无法获取任务ID")
+            return
+
+        # 确认删除
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除评论任务 '{task_id}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # 从DiscordManager中删除任务
+            task_to_remove = None
+            for task in self.discord_manager.comment_tasks:
+                if task.id == task_id:
+                    task_to_remove = task
+                    break
+
+            if task_to_remove:
+                self.discord_manager.comment_tasks.remove(task_to_remove)
+                self.update_comment_tasks_list()
+                self.save_config()
+                self.add_log(f"评论任务已删除: {task_id}", "info")
+                QMessageBox.information(self, "成功", "评论任务已删除")
+            else:
+                QMessageBox.warning(self, "错误", "未找到要删除的任务")
+
+    def on_posting_interval_changed(self):
+        """发帖间隔改变"""
+        value = self.posting_interval_spin.value()
+        self.discord_manager.posting_interval = value
+        self.save_config()
+
+    def on_comment_interval_changed(self):
+        """评论间隔改变"""
+        value = self.comment_interval_spin.value()
+        self.discord_manager.comment_interval = value
+        self.save_config()
+
+    def update_comment_tasks_list(self):
+        """更新评论任务列表"""
+        self.comment_tasks_table.setRowCount(len(self.discord_manager.comment_tasks))
+        for row, task in enumerate(self.discord_manager.comment_tasks):
+            content_item = QTableWidgetItem(task.content[:50] + "..." if len(task.content) > 50 else task.content)
+            content_item.setData(Qt.ItemDataRole.UserRole, task.id)  # 存储任务ID
+            self.comment_tasks_table.setItem(row, 0, content_item)
+            self.comment_tasks_table.setItem(row, 1, QTableWidgetItem(task.message_link))
+            self.comment_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
+            self.comment_tasks_table.setItem(row, 3, QTableWidgetItem("激活" if task.is_active else "禁用"))
+
+            # 创建操作按钮
+            action_widget = QWidget()
+            action_layout = QHBoxLayout(action_widget)
+            action_layout.setContentsMargins(0, 0, 0, 0)
+            action_layout.setSpacing(2)
+
+            edit_btn = QPushButton("编辑")
+            edit_btn.setFixedSize(50, 25)
+            edit_btn.clicked.connect(lambda checked, r=row: self.edit_comment_task_by_id(r))
+
+            delete_btn = QPushButton("删除")
+            delete_btn.setFixedSize(50, 25)
+            delete_btn.clicked.connect(lambda checked, r=row: self.remove_comment_task_by_row(r))
+
+            action_layout.addWidget(edit_btn)
+            action_layout.addWidget(delete_btn)
+            action_layout.addStretch()
+
+            self.comment_tasks_table.setCellWidget(row, 4, action_widget)
+
+
+class PostingTaskDialog(QDialog):
+    """发帖任务对话框"""
+
+    def __init__(self, parent=None, task=None):
         super().__init__(parent)
-        self.account = account
-        self.rules = rules or []
-        self.checkboxes = []
-        self.init_ui()
-
-    def init_ui(self):
-        """初始化界面"""
-        self.setWindowTitle(f"配置账号规则 - {self.account.alias}")
+        self.task = task
+        self.setWindowTitle("编辑发帖任务" if task else "添加发帖任务")
         self.setModal(True)
         self.resize(500, 400)
 
         layout = QVBoxLayout(self)
 
-        # 标题
-        title_label = QLabel(f"选择账号 '{self.account.alias}' 要应用的规则：")
-        title_label.setStyleSheet("font-weight: bold; font-size: 12px;")
-        layout.addWidget(title_label)
+        # 频道ID
+        channel_layout = QHBoxLayout()
+        channel_layout.addWidget(QLabel("频道ID:"))
+        self.channel_input = QLineEdit()
+        self.channel_input.setPlaceholderText("输入Discord频道ID")
+        channel_layout.addWidget(self.channel_input)
+        layout.addLayout(channel_layout)
 
-        # 规则选择区域
-        scroll_area = QScrollArea()
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
+        # 帖子标题
+        title_layout = QHBoxLayout()
+        title_layout.addWidget(QLabel("帖子标题 (可选):"))
+        self.title_input = QLineEdit()
+        self.title_input.setPlaceholderText("输入帖子标题...")
+        title_layout.addWidget(self.title_input)
+        layout.addLayout(title_layout)
 
-        self.checkboxes = []
-        for rule in self.rules:
-            checkbox = QCheckBox(f"[{rule.id}] {rule.keywords[0] if rule.keywords else '无关键词'} -> {rule.reply[:30]}{'...' if len(rule.reply) > 30 else ''}")
-            checkbox.setChecked(rule.id in self.account.rule_ids)
-            checkbox.setToolTip(f"关键词: {', '.join(rule.keywords)}\n回复: {rule.reply}")
-            self.checkboxes.append((rule.id, checkbox))
-            scroll_layout.addWidget(checkbox)
+        # 发帖内容
+        content_layout = QVBoxLayout()
+        content_layout.addWidget(QLabel("发帖内容:"))
+        self.content_input = QTextEdit()
+        self.content_input.setPlaceholderText("输入要发帖的内容...")
+        content_layout.addWidget(self.content_input)
+        layout.addLayout(content_layout)
 
-        if not self.rules:
-            no_rules_label = QLabel("暂无可用规则，请先添加规则")
-            no_rules_label.setStyleSheet("color: gray; font-style: italic;")
-            scroll_layout.addWidget(no_rules_label)
+        # 图片路径（支持多选）
+        image_layout = QHBoxLayout()
+        image_layout.addWidget(QLabel("图片 (可选):"))
+        self.image_input = QLineEdit()
+        self.image_input.setPlaceholderText("选择图片文件路径（多个用分号或逗号分隔）...")
+        image_layout.addWidget(self.image_input)
 
-        scroll_layout.addStretch()
-        scroll_area.setWidget(scroll_widget)
-        scroll_area.setWidgetResizable(True)
-        layout.addWidget(scroll_area)
+        browse_button = QPushButton("浏览...")
+        browse_button.clicked.connect(self.browse_image)
+        image_layout.addWidget(browse_button)
 
-        # 统计信息
-        stats_label = QLabel()
-        self.update_stats_label(stats_label)
-        layout.addWidget(stats_label)
+        clear_button = QPushButton("清空")
+        clear_button.clicked.connect(lambda: self.image_input.clear())
+        image_layout.addWidget(clear_button)
 
-        # 连接信号
-        for rule_id, checkbox in self.checkboxes:
-            checkbox.stateChanged.connect(lambda: self.update_stats_label(stats_label))
+        layout.addLayout(image_layout)
+
+        # 注意：延时设置已移除，使用全局发帖间隔
 
         # 按钮
         buttons_layout = QHBoxLayout()
-        buttons_layout.addStretch()
-
-        select_all_btn = QPushButton("全选")
-        select_all_btn.clicked.connect(self.select_all_rules)
-        buttons_layout.addWidget(select_all_btn)
-
-        clear_all_btn = QPushButton("清空")
-        clear_all_btn.clicked.connect(self.clear_all_rules)
-        buttons_layout.addWidget(clear_all_btn)
-
         buttons_layout.addStretch()
 
         cancel_btn = QPushButton("取消")
@@ -1722,25 +2982,165 @@ class AccountRulesDialog(QDialog):
 
         layout.addLayout(buttons_layout)
 
-    def update_stats_label(self, label):
-        """更新统计标签"""
-        selected_count = sum(1 for _, checkbox in self.checkboxes if checkbox.isChecked())
-        total_count = len(self.checkboxes)
-        label.setText(f"已选择 {selected_count}/{total_count} 个规则")
+    def browse_image(self):
+        """浏览选择图片文件（支持多选）"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)  # 改为多选模式
 
-    def select_all_rules(self):
-        """选择所有规则"""
-        for _, checkbox in self.checkboxes:
-            checkbox.setChecked(True)
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                # 将多个文件路径用分号连接
+                current_text = self.image_input.text().strip()
+                new_files = ";".join(selected_files)
 
-    def clear_all_rules(self):
-        """清空所有选择"""
-        for _, checkbox in self.checkboxes:
-            checkbox.setChecked(False)
+                if current_text:
+                    # 如果已有内容，追加到后面
+                    combined = current_text + ";" + new_files
+                    # 去重
+                    files_list = list(set(combined.split(";")))
+                    self.image_input.setText(";".join(files_list))
+                else:
+                    self.image_input.setText(new_files)
 
-    def get_selected_rule_ids(self):
-        """获取选中的规则ID列表"""
-        return [rule_id for rule_id, checkbox in self.checkboxes if checkbox.isChecked()]
+    def get_data(self):
+        """获取对话框数据"""
+        return {
+            'channel_id': int(self.channel_input.text().strip()),
+            'title': self.title_input.text().strip() or None,
+            'content': self.content_input.toPlainText().strip(),
+            'image_path': self.image_input.text().strip() or None,
+            'delay_seconds': 0  # 使用全局发帖间隔，不再有单独延时
+        }
+
+    def showEvent(self, event):
+        """对话框显示事件"""
+        super().showEvent(event)
+        # 在对话框显示时加载任务数据
+        self.load_task_data()
+
+    def load_task_data(self):
+        """加载任务数据到对话框（用于编辑）"""
+        if self.task:
+            self.channel_input.setText(str(self.task.channel_id))
+            if hasattr(self, 'title_input'):
+                self.title_input.setText(self.task.title or "")
+            if hasattr(self, 'content_input'):
+                self.content_input.setPlainText(self.task.content)
+            if hasattr(self, 'image_input'):
+                self.image_input.setText(self.task.image_path or "")
+            # 不再设置delay_spin，因为已移除
+
+
+class CommentTaskDialog(QDialog):
+    """评论任务对话框"""
+
+    def __init__(self, parent=None, task=None):
+        super().__init__(parent)
+        self.task = task
+        self.setWindowTitle("编辑评论任务" if task else "添加评论任务")
+        self.setModal(True)
+        self.resize(500, 400)
+
+        layout = QVBoxLayout(self)
+
+        # 消息链接
+        link_layout = QVBoxLayout()
+        link_layout.addWidget(QLabel("消息链接:"))
+        self.link_input = QLineEdit()
+        self.link_input.setPlaceholderText("Discord消息链接 (https://discord.com/channels/.../...)")
+        link_layout.addWidget(self.link_input)
+        layout.addLayout(link_layout)
+
+        # 评论内容
+        content_layout = QVBoxLayout()
+        content_layout.addWidget(QLabel("评论内容:"))
+        self.content_input = QTextEdit()
+        self.content_input.setPlaceholderText("输入要评论的内容...")
+        content_layout.addWidget(self.content_input)
+        layout.addLayout(content_layout)
+
+        # 图片路径
+        image_layout = QHBoxLayout()
+        image_layout.addWidget(QLabel("图片 (可选):"))
+        self.image_input = QLineEdit()
+        self.image_input.setPlaceholderText("选择图片文件路径...")
+        image_layout.addWidget(self.image_input)
+
+        browse_button = QPushButton("浏览...")
+        browse_button.clicked.connect(self.browse_image)
+        image_layout.addWidget(browse_button)
+        layout.addLayout(image_layout)
+
+        # 注意：延时设置已移除，使用全局评论间隔
+
+        # 按钮
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        buttons_layout.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("确定")
+        ok_btn.clicked.connect(self.accept)
+        ok_btn.setDefault(True)
+        buttons_layout.addWidget(ok_btn)
+
+        layout.addLayout(buttons_layout)
+
+    def browse_image(self):
+        """浏览选择图片文件（支持多选）"""
+        file_dialog = QFileDialog(self)
+        file_dialog.setNameFilter("图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)")
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)  # 改为多选模式
+
+        if file_dialog.exec():
+            selected_files = file_dialog.selectedFiles()
+            if selected_files:
+                # 将多个文件路径用分号连接
+                current_text = self.image_input.text().strip()
+                new_files = ";".join(selected_files)
+
+                if current_text:
+                    # 如果已有内容，追加到后面
+                    combined = current_text + ";" + new_files
+                    # 去重
+                    files_list = list(set(combined.split(";")))
+                    self.image_input.setText(";".join(files_list))
+                else:
+                    self.image_input.setText(new_files)
+
+    def get_data(self):
+        """获取对话框数据"""
+        return {
+            'message_link': self.link_input.text().strip(),
+            'content': self.content_input.toPlainText().strip(),
+            'image_path': self.image_input.text().strip() or None,
+            'delay_seconds': 0  # 使用全局评论间隔，不再有单独延时
+        }
+
+        # 加载任务数据（用于编辑模式）
+        self.load_task_data()
+
+    def showEvent(self, event):
+        """对话框显示事件"""
+        super().showEvent(event)
+        # 在对话框显示时加载任务数据
+        self.load_task_data()
+
+    def load_task_data(self):
+        """加载任务数据到对话框（用于编辑）"""
+        if self.task:
+            if hasattr(self, 'link_input'):
+                self.link_input.setText(self.task.message_link)
+            if hasattr(self, 'content_input'):
+                self.content_input.setPlainText(self.task.content)
+            if hasattr(self, 'image_input'):
+                self.image_input.setText(self.task.image_path or "")
+            # 不再设置delay_spin，因为已移除
+
 
 
 def main():
@@ -1752,6 +3152,12 @@ def main():
     app.setApplicationName("Discord Auto Reply")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("DiscordAutoReply")
+
+    # 修复macOS上的NSOpenPanel警告和视觉问题
+    import platform
+    if platform.system() == 'Darwin':  # macOS
+        # 禁用原生文件对话框以避免NSOpenPanel警告
+        app.setAttribute(Qt.AA_DontUseNativeDialogs, True)
 
     window = MainWindow()
     window.show()

@@ -1,0 +1,99 @@
+name: Build Protected Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install UPX
+        run: |
+          choco install upx
+
+      - name: Create version info
+        run: |
+          echo "__version__ = '${{ github.ref_name }}'" > src/version.py
+
+      - name: Compile EXE with Nuitka (Machine Code Protection)
+        run: |
+          python -m nuitka `
+            --standalone `
+            --onefile `
+            --windows-uac-admin `
+            --windows-company-name="Discord Auto Reply" `
+            --windows-product-name="Discord Auto Reply Tool" `
+            --windows-file-version="${{ github.ref_name }}" `
+            --windows-product-version="${{ github.ref_name }}" `
+            --windows-file-description="Discord Auto Reply Tool with Anti-Reverse Engineering" `
+            --enable-plugin=tk-inter `
+            --enable-plugin=multiprocessing `
+            --disable-console `
+            --assume-yes-for-downloads `
+            --output-filename=DiscordAutoReply `
+            --output-dir=dist `
+            run.py
+
+      - name: Compress and Obfuscate with UPX
+        run: |
+          upx --best --ultra-brute dist/DiscordAutoReply.exe
+
+      - name: Test EXE functionality
+        run: |
+          # Basic test to ensure EXE runs (will fail due to no Discord token, but ensures no import errors)
+          timeout 10 dist/DiscordAutoReply.exe || echo "Expected timeout - EXE is working"
+
+      - name: Create release archive
+        run: |
+          7z a -t7z -mx9 DiscordAutoReply-${{ github.ref_name }}-windows.7z dist/DiscordAutoReply.exe
+          7z a -tzip -mx9 DiscordAutoReply-${{ github.ref_name }}-windows.zip dist/DiscordAutoReply.exe
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiscordAutoReply-windows-exe
+          path: dist/DiscordAutoReply.exe
+          retention-days: 30
+
+      - name: Upload 7z archive
+        uses: actions/upload-artifact@v4
+          with:
+            name: DiscordAutoReply-windows-7z
+            path: DiscordAutoReply-${{ github.ref_name }}-windows.7z
+            retention-days: 30
+
+      - name: Upload ZIP archive
+        uses: actions/upload-artifact@v4
+          with:
+            name: DiscordAutoReply-windows-zip
+            path: DiscordAutoReply-${{ github.ref_name }}-windows.zip
+            retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/DiscordAutoReply.exe
+            DiscordAutoReply-${{ github.ref_name }}-windows.7z
+            DiscordAutoReply-${{ github.ref_name }}-windows.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

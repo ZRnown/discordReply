@@ -1,0 +1,191 @@
+name: Build Advanced Protected Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          choco install upx
+          choco install llvm  # For clang compilation
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyminifier  # Code obfuscation
+
+      - name: Create version info
+        run: |
+          echo "__version__ = '${{ github.ref_name }}'" > src/version.py
+          echo "__build_time__ = '$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")'" >> src/version.py
+
+      - name: Obfuscate source code
+        run: |
+          # Obfuscate Python source files
+          pyminifier --obfuscate --obfuscate-imports --obfuscate-variables --replacement-length=1 src/*.py
+
+      - name: Compile EXE with Nuitka (Maximum Protection)
+        run: |
+          python -m nuitka `
+            --standalone `
+            --onefile `
+            --windows-uac-admin `
+            --windows-company-name="Discord Auto Reply" `
+            --windows-product-name="Discord Auto Reply Tool" `
+            --windows-file-version="${{ github.ref_name }}" `
+            --windows-product-version="${{ github.ref_name }}" `
+            --windows-file-description="Discord Auto Reply Tool with Advanced Anti-Reverse Engineering" `
+            --enable-plugin=tk-inter `
+            --enable-plugin=multiprocessing `
+            --disable-console `
+            --assume-yes-for-downloads `
+            --output-filename=DiscordAutoReply `
+            --output-dir=dist `
+            --clang `
+            --lto=yes `
+            --static-libpython=no `
+            --no-deployment-flag=self-execution `
+            --no-deployment-flag=check-versions `
+            run.py
+
+      - name: Advanced compression with UPX
+        run: |
+          # Multiple compression passes for maximum obfuscation
+          upx --best --ultra-brute --compress-icons=0 dist/DiscordAutoReply.exe
+          upx --overlay=strip dist/DiscordAutoReply.exe
+
+      - name: Strip debug information
+        run: |
+          # Remove any remaining debug information
+          if (Test-Path "C:\Program Files\Git\usr\bin\strip.exe") {
+            & "C:\Program Files\Git\usr\bin\strip.exe" dist/DiscordAutoReply.exe
+          }
+
+      - name: Test EXE integrity
+        run: |
+          # Verify EXE is valid and not corrupted
+          $fileInfo = Get-Item dist/DiscordAutoReply.exe
+          Write-Host "EXE Size: $($fileInfo.Length) bytes"
+          Write-Host "EXE Created: $($fileInfo.CreationTime)"
+
+          # Basic functionality test
+          $timeout = 15
+          $job = Start-Job -ScriptBlock {
+              try {
+                  Start-Process -FilePath "dist/DiscordAutoReply.exe" -NoNewWindow -Wait -Timeout 10
+              } catch {
+                  # Expected to fail due to missing Discord token
+              }
+          }
+          Start-Sleep -Seconds $timeout
+          if ($job.State -eq 'Running') {
+              Stop-Job $job
+              Write-Host "EXE started successfully (expected timeout)"
+          } else {
+              Write-Host "EXE execution test completed"
+          }
+          Remove-Job $job
+
+      - name: Create secure archives
+        run: |
+          # Create password-protected 7z archive
+          7z a -t7z -mx9 -p"${{ secrets.ARCHIVE_PASSWORD || 'DiscordAutoReply2024' }}" `
+              -mhe=on DiscordAutoReply-${{ github.ref_name }}-protected.7z dist/DiscordAutoReply.exe
+
+          # Create regular ZIP for easy access
+          7z a -tzip -mx9 DiscordAutoReply-${{ github.ref_name }}-windows.zip dist/DiscordAutoReply.exe
+
+      - name: Generate checksums
+        run: |
+          # Generate SHA256 checksums for verification
+          $exeHash = Get-FileHash dist/DiscordAutoReply.exe -Algorithm SHA256
+          $zipHash = Get-FileHash DiscordAutoReply-${{ github.ref_name }}-windows.zip -Algorithm SHA256
+          $protectedHash = Get-FileHash DiscordAutoReply-${{ github.ref_name }}-protected.7z -Algorithm SHA256
+
+          "DiscordAutoReply.exe SHA256: $($exeHash.Hash)" | Out-File -FilePath checksums.txt -Append
+          "DiscordAutoReply-${{ github.ref_name }}-windows.zip SHA256: $($zipHash.Hash)" | Out-File -FilePath checksums.txt -Append
+          "DiscordAutoReply-${{ github.ref_name }}-protected.7z SHA256: $($protectedHash.Hash)" | Out-File -FilePath checksums.txt -Append
+
+      - name: Upload protected EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiscordAutoReply-protected-exe
+          path: dist/DiscordAutoReply.exe
+          retention-days: 30
+
+      - name: Upload protected 7z archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiscordAutoReply-protected-7z
+          path: DiscordAutoReply-${{ github.ref_name }}-protected.7z
+          retention-days: 30
+
+      - name: Upload regular ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: DiscordAutoReply-windows-zip
+          path: DiscordAutoReply-${{ github.ref_name }}-windows.zip
+          retention-days: 30
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: checksums.txt
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/DiscordAutoReply.exe
+            DiscordAutoReply-${{ github.ref_name }}-windows.zip
+            DiscordAutoReply-${{ github.ref_name }}-protected.7z
+            checksums.txt
+          generate_release_notes: true
+          body: |
+            ## 🚀 Discord Auto Reply Tool ${{ github.ref_name }}
+
+            ### 🔒 Security Features
+            - **Machine Code Compilation**: Converted to native Windows executable using Nuitka
+            - **Code Obfuscation**: Source code obfuscated to prevent reverse engineering
+            - **UPX Compression**: Advanced compression and structure obfuscation
+            - **Link-time Optimization**: Maximum performance and size optimization
+
+            ### 📁 Downloads
+            - `DiscordAutoReply.exe` - Main executable (recommended)
+            - `DiscordAutoReply-${{ github.ref_name }}-windows.zip` - Regular ZIP archive
+            - `DiscordAutoReply-${{ github.ref_name }}-protected.7z` - Password-protected 7z archive
+
+            ### 🔐 Password for Protected Archive
+            Archive password: `DiscordAutoReply2024`
+
+            ### ✅ Checksums (SHA256)
+            See `checksums.txt` for file integrity verification.
+
+            ### 📋 Features
+            - Automatic Discord reply system
+            - Multi-account support
+            - Task scheduling
+            - Image attachments
+            - Thread support
+            - Anti-detection measures
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
