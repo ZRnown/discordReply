@@ -42,12 +42,14 @@
 - 缺少包含关键包
 - 没有包含配置文件
 - 使用过时的控制台模式参数
+- PowerShell 语法错误
 
 **修复**：
 - ✅ 添加 `--enable-plugin=pyside6`
 - ✅ 添加 `--include-package=discord`, `aiohttp`, `asyncio`
-- ✅ 添加 `--include-data-files=config=config`
+- ✅ 添加 `--include-data-dir=config=config`（包含目录）
 - ✅ 使用 `--windows-console-mode=disable`
+- ✅ 添加 `shell: cmd` 指定使用 CMD shell
 - ✅ 添加配置目录创建步骤
 
 ### 5. build_exe.py
