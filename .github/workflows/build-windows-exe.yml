@@ -1,4 +1,4 @@
-name: Build Protected Windows EXE
+name: Build Windows EXE
 
 on:
   push:
@@ -32,7 +32,7 @@ jobs:
         run: |
           echo "__version__ = '${{ github.ref_name }}'" > src/version.py
 
-      - name: Compile EXE with Nuitka (Machine Code Protection)
+      - name: Build EXE with Nuitka
         run: |
           python -m nuitka `
             --standalone `
@@ -42,7 +42,7 @@ jobs:
             --windows-product-name="Discord Auto Reply Tool" `
             --windows-file-version="${{ github.ref_name }}" `
             --windows-product-version="${{ github.ref_name }}" `
-            --windows-file-description="Discord Auto Reply Tool with Anti-Reverse Engineering" `
+            --windows-file-description="Discord Auto Reply Tool" `
             --enable-plugin=tk-inter `
             --enable-plugin=multiprocessing `
             --disable-console `
@@ -51,19 +51,21 @@ jobs:
             --output-dir=dist `
             run.py
 
-      - name: Compress and Obfuscate with UPX
+      - name: Compress EXE with UPX
         run: |
-          upx --best --ultra-brute dist/DiscordAutoReply.exe
+          upx --best dist/DiscordAutoReply.exe
 
-      - name: Test EXE functionality
+      - name: Test EXE
         run: |
-          # Basic test to ensure EXE runs (will fail due to no Discord token, but ensures no import errors)
-          timeout 10 dist/DiscordAutoReply.exe || echo "Expected timeout - EXE is working"
+          # Quick test to ensure EXE starts (will timeout due to GUI)
+          Start-Process dist/DiscordAutoReply.exe -WindowStyle Hidden
+          Start-Sleep 3
+          Stop-Process -Name "DiscordAutoReply" -ErrorAction SilentlyContinue
+          Write-Host "EXE test completed"
 
-      - name: Create release archive
+      - name: Create ZIP archive
         run: |
-          7z a -t7z -mx9 DiscordAutoReply-${{ github.ref_name }}-windows.7z dist/DiscordAutoReply.exe
-          7z a -tzip -mx9 DiscordAutoReply-${{ github.ref_name }}-windows.zip dist/DiscordAutoReply.exe
+          Compress-Archive -Path dist/DiscordAutoReply.exe -DestinationPath DiscordAutoReply-${{ github.ref_name }}-windows.zip
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
@@ -72,19 +74,12 @@ jobs:
           path: dist/DiscordAutoReply.exe
           retention-days: 30
 
-      - name: Upload 7z archive
-        uses: actions/upload-artifact@v4
-          with:
-            name: DiscordAutoReply-windows-7z
-            path: DiscordAutoReply-${{ github.ref_name }}-windows.7z
-            retention-days: 30
-
       - name: Upload ZIP archive
         uses: actions/upload-artifact@v4
-          with:
-            name: DiscordAutoReply-windows-zip
-            path: DiscordAutoReply-${{ github.ref_name }}-windows.zip
-            retention-days: 30
+        with:
+          name: DiscordAutoReply-windows-zip
+          path: DiscordAutoReply-${{ github.ref_name }}-windows.zip
+          retention-days: 30
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -92,7 +87,6 @@ jobs:
         with:
           files: |
             dist/DiscordAutoReply.exe
-            DiscordAutoReply-${{ github.ref_name }}-windows.7z
             DiscordAutoReply-${{ github.ref_name }}-windows.zip
           generate_release_notes: true
         env:
