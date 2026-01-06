@@ -3169,9 +3169,10 @@ def main():
     timer.timeout.connect(window.update_status)
     timer.start(5000)  # 每5秒更新一次
 
-    # 运行Qt应用程序事件循环
-    sys.exit(app.exec())
+    # 运行Qt应用程序事件循环，不使用 asyncio.run()
+    # PySide6 的事件循环会接管主线程
+    return app.exec()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(main())

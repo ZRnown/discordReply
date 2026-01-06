@@ -1,5 +1,7 @@
 import json
 import os
+import sys
+from pathlib import Path
 from typing import List, Dict, Any
 from dataclasses import asdict
 from discord_client import Account, Rule, MatchType, PostingTask, CommentTask
@@ -7,12 +9,20 @@ from discord_client import Account, Rule, MatchType, PostingTask, CommentTask
 
 class ConfigManager:
     def __init__(self, config_dir: str = "config"):
-        self.config_dir = config_dir
-        self.config_file = os.path.join(config_dir, "config.json")
+        self.config_dir = self._get_config_dir(config_dir)
+        self.config_file = os.path.join(self.config_dir, "config.json")
         self.ensure_config_dir()
 
+    def _get_config_dir(self, config_dir: str) -> str:
+        if getattr(sys, 'frozen', False):
+            # 运行在打包后的 EXE 中，配置目录与 EXE 同级
+            exe_path = Path(sys.executable).parent
+            return str(exe_path / config_dir)
+        else:
+            # 运行在开发环境中
+            return config_dir
+
     def ensure_config_dir(self):
-        """确保配置目录存在"""
         if not os.path.exists(self.config_dir):
             os.makedirs(self.config_dir)
 

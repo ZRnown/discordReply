@@ -25,16 +25,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create version file
+      - name: Create config directory
         run: |
-          echo "version = 'dev'" > src/version.py
+          if not exist config mkdir config
+          copy config\example_config.json config\config.json
 
       - name: Build EXE
         run: |
-          python -m nuitka --onefile --windows-uac-admin --windows-console-mode=disable --assume-yes-for-downloads --output-filename=DiscordAutoReply --output-dir=dist run.py
+          python -m nuitka ^
+            --standalone ^
+            --onefile ^
+            --windows-uac-admin ^
+            --windows-console-mode=disable ^
+            --enable-plugin=pyside6 ^
+            --enable-plugin=multiprocessing ^
+            --include-package=discord ^
+            --include-package=aiohttp ^
+            --include-package=asyncio ^
+            --include-data-files=config=config ^
+            --assume-yes-for-downloads ^
+            --output-filename=DiscordAutoReply.exe ^
+            --output-dir=dist ^
+            run.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DiscordAutoReply-windows
-          path: dist/DiscordAutoReply.exe
+          path: |
+            dist/DiscordAutoReply.exe

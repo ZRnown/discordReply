@@ -47,7 +47,18 @@ def build_exe():
     """使用 Nuitka 构建 EXE"""
     print("🔨 开始构建 EXE...")
 
-    # 构建命令
+    config_dir = Path("config")
+    if not config_dir.exists():
+        config_dir.mkdir()
+        print("创建 config 目录")
+
+    example_config = Path("config/example_config.json")
+    main_config = Path("config/config.json")
+    if example_config.exists() and not main_config.exists():
+        import shutil
+        shutil.copy(example_config, main_config)
+        print("复制示例配置文件")
+
     cmd = [
         sys.executable, "-m", "nuitka",
         "--standalone",
@@ -56,11 +67,15 @@ def build_exe():
         "--windows-company-name=Discord Auto Reply",
         "--windows-product-name=Discord Auto Reply Tool",
         "--windows-file-description=Discord Auto Reply Tool",
-        "--enable-plugin=tk-inter",
+        "--enable-plugin=pyside6",
         "--enable-plugin=multiprocessing",
-        "--disable-console",
+        "--windows-console-mode=disable",
+        "--include-package=discord",
+        "--include-package=aiohttp",
+        "--include-package=asyncio",
+        "--include-data-files=config=config",
         "--assume-yes-for-downloads",
-        "--output-filename=DiscordAutoReply",
+        "--output-filename=DiscordAutoReply.exe",
         "--output-dir=dist",
         "run.py"
     ]
@@ -108,14 +123,22 @@ def create_archive():
         return False
 
     try:
-        # 使用 PowerShell 创建 ZIP
         zip_name = "DiscordAutoReply-windows.zip"
-        ps_cmd = f'Compress-Archive -Path "{exe_path}" -DestinationPath "{zip_name}" -Force'
-        subprocess.run(["powershell", "-Command", ps_cmd], check=True)
+
+        if platform.system() == "Windows":
+            ps_cmd = f'Compress-Archive -Path "{exe_path}" -DestinationPath "{zip_name}" -Force'
+            subprocess.run(["powershell", "-Command", ps_cmd], check=True)
+        else:
+            import zipfile
+            with zipfile.ZipFile(zip_name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                zipf.write(exe_path, exe_path.name)
 
         print(f"✅ 归档创建完成: {zip_name}")
         return True
     except subprocess.CalledProcessError as e:
+        print(f"❌ 归档创建失败: {e}")
+        return False
+    except Exception as e:
         print(f"❌ 归档创建失败: {e}")
         return False
 
