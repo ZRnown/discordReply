@@ -1,4 +1,5 @@
 discord.py-self==2.0.1
 PySide6==6.8.0.2
+nuitka>=1.8.0
 aiohttp>=3.8.0
 typing-extensions>=4.0.0
