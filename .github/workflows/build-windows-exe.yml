@@ -26,9 +26,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Create config directory
+        shell: cmd
         run: |
           if not exist config mkdir config
-          copy config\example_config.json config\config.json
+          if exist config\example_config.json copy config\example_config.json config\config.json
 
       - name: Build EXE
         run: |
