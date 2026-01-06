@@ -32,22 +32,9 @@ jobs:
           if exist config\example_config.json copy config\example_config.json config\config.json
 
       - name: Build EXE
+        shell: cmd
         run: |
-          python -m nuitka ^
-            --standalone ^
-            --onefile ^
-            --windows-uac-admin ^
-            --windows-console-mode=disable ^
-            --enable-plugin=pyside6 ^
-            --enable-plugin=multiprocessing ^
-            --include-package=discord ^
-            --include-package=aiohttp ^
-            --include-package=asyncio ^
-            --include-data-files=config=config ^
-            --assume-yes-for-downloads ^
-            --output-filename=DiscordAutoReply.exe ^
-            --output-dir=dist ^
-            run.py
+          python -m nuitka --standalone --onefile --windows-uac-admin --windows-console-mode=disable --enable-plugin=pyside6 --enable-plugin=multiprocessing --include-package=discord --include-package=aiohttp --include-package=asyncio --include-data-files=config=config --assume-yes-for-downloads --output-filename=DiscordAutoReply.exe --output-dir=dist run.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
