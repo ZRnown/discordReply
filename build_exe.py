@@ -73,7 +73,7 @@ def build_exe():
         "--include-package=discord",
         "--include-package=aiohttp",
         "--include-package=asyncio",
-        "--include-data-files=config=config",
+        "--include-data-dir=config=config",
         "--assume-yes-for-downloads",
         "--output-filename=DiscordAutoReply.exe",
         "--output-dir=dist",
