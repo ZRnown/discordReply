@@ -1077,146 +1077,111 @@ class DiscordManager:
             return False
 
         try:
-            # 支持多种输入格式：
-            # 1. 完整的Discord链接: https://discord.com/channels/guild_id/channel_id
-            # 2. 纯数字频道ID: 1457988558332624967
-            link = task.message_link.strip()
+            links_input = task.message_link.strip()
 
-            if link.isdigit():
-                # 纯数字ID，认为是频道ID
-                try:
-                    channel_id = int(link)
-                    target_id = None
-                    if self.log_callback:
-                        self.log_callback(f"📝 检测到频道ID: {channel_id}，将在此频道发消息")
-                except ValueError:
-                    if self.log_callback:
-                        self.log_callback(f"❌ 无效的频道ID: {link}")
-                    return False
+            separators = ['\n', ';', ',']
+            links = []
+            for sep in separators:
+                if sep in links_input:
+                    links = [link.strip() for link in links_input.split(sep) if link.strip()]
+                    break
             else:
-                # Discord链接格式解析
-                parts = link.split('/')
-                if len(parts) >= 6:
+                links = [links_input] if links_input else []
+
+            success_count = 0
+            for link in links:
+                if link.isdigit():
                     try:
-                        channel_id = int(parts[-1])  # 最后一个ID作为频道ID
+                        channel_id = int(link)
                         target_id = None
-
-                        # 如果有更多的部分，说明有message_id或thread_id
-                        if len(parts) >= 7:
-                            target_id = int(parts[-2])  # 倒数第二个作为目标ID
+                    except ValueError:
                         if self.log_callback:
-                            self.log_callback(f"📝 解析链接 - 频道ID: {channel_id}, 目标ID: {target_id}")
-                    except (ValueError, IndexError) as e:
-                        if self.log_callback:
-                            self.log_callback(f"❌ 无法解析链接中的ID: {link} - {str(e)}")
-                        return False
+                            self.log_callback(f"❌ 无效的频道ID: {link}")
+                        continue
                 else:
-                    if self.log_callback:
-                        self.log_callback(f"❌ 无效的消息链接格式: {link}")
-                    return False
-
-            # 获取频道
-            channel = client.get_channel(channel_id)
-            if not channel:
-                if self.log_callback:
-                    self.log_callback(f"❌ 找不到频道 {channel_id}")
-                return False
-
-            # 处理不同情况
-            target_channel = channel
-            message = None
-
-            if target_id is None:
-                # 只有频道ID，直接在频道发消息
-                if self.log_callback:
-                    self.log_callback(f"📝 直接在频道 {channel.name} 发消息")
-                # 不需要回复特定消息，直接发新消息
-            else:
-                # 有目标ID，尝试获取消息或thread
-                try:
-                    # 首先尝试将其作为消息获取
-                    potential_message = await channel.fetch_message(target_id)
-
-                    # 检查这是否是一个thread的起始消息
-                    if hasattr(potential_message, 'thread') and potential_message.thread:
-                        # 这是一个thread的起始消息，我们要在thread中发消息
-                        target_channel = potential_message.thread
-                        if self.log_callback:
-                            self.log_callback(f"📝 在thread '{target_channel.name}' 中发消息")
+                    parts = link.split('/')
+                    if len(parts) >= 6:
+                        try:
+                            channel_id = int(parts[-1])
+                            target_id = None
+                            if len(parts) >= 7:
+                                target_id = int(parts[-2])
+                        except (ValueError, IndexError) as e:
+                            if self.log_callback:
+                                self.log_callback(f"❌ 无法解析链接: {link} - {str(e)}")
+                            continue
                     else:
-                        # 这是一个普通消息，我们要回复它
-                        message = potential_message
                         if self.log_callback:
-                            self.log_callback(f"📝 回复消息: {potential_message.content[:50]}...")
+                            self.log_callback(f"❌ 无效的链接格式: {link}")
+                        continue
 
-                except discord.NotFound:
-                    # 不是消息，尝试作为thread获取
+                channel = client.get_channel(channel_id)
+                if not channel:
+                    if self.log_callback:
+                        self.log_callback(f"❌ 找不到频道 {channel_id}")
+                    continue
+
+                target_channel = channel
+                message = None
+
+                if target_id is None:
+                    pass
+                else:
                     try:
-                        potential_thread = await channel.fetch_message(target_id)
-                        if hasattr(potential_thread, 'thread') and potential_thread.thread:
-                            target_channel = potential_thread.thread
-                            if self.log_callback:
-                                self.log_callback(f"📝 在thread '{target_channel.name}' 中发消息")
+                        potential_message = await channel.fetch_message(target_id)
+                        if hasattr(potential_message, 'thread') and potential_message.thread:
+                            target_channel = potential_message.thread
                         else:
-                            if self.log_callback:
-                                self.log_callback(f"❌ 找不到有效的消息或thread: {target_id}")
-                            return False
+                            message = potential_message
                     except discord.NotFound:
                         if self.log_callback:
-                            self.log_callback(f"❌ 找不到消息或thread: {target_id}")
-                        return False
+                            self.log_callback(f"❌ 找不到消息: {target_id}")
+                        continue
 
-            # 延迟执行
-            if task.delay_seconds > 0:
-                await asyncio.sleep(task.delay_seconds)
+                if task.delay_seconds > 0:
+                    await asyncio.sleep(task.delay_seconds)
 
-            # 发送评论
-            # 支持多个图片，用分号或逗号分隔
-            image_paths = []
-            if task.image_path:
-                # 按分号或逗号分割，支持多个图片路径
-                separators = [';', ',']
-                for sep in separators:
-                    if sep in task.image_path:
-                        image_paths = [path.strip() for path in task.image_path.split(sep) if path.strip()]
-                        break
-                else:
-                    # 单个图片路径
-                    image_paths = [task.image_path]
-
-                # 过滤出存在的文件
-                image_paths = [path for path in image_paths if os.path.exists(path)]
-
-            if image_paths:
-                # 发送图片评论
-                files = [discord.File(path) for path in image_paths]
-                if task.content.strip():
-                    if message:
-                        await message.reply(task.content, files=files)
+                image_paths = []
+                if task.image_path:
+                    separators = [';', ',']
+                    for sep in separators:
+                        if sep in task.image_path:
+                            image_paths = [path.strip() for path in task.image_path.split(sep) if path.strip()]
+                            break
                     else:
-                        await target_channel.send(task.content, files=files)
-                else:
-                    if message:
-                        await message.reply(files=files)
-                    else:
-                        await target_channel.send(files=files)
-            else:
-                # 只发送文字评论
-                if message:
-                    await message.reply(task.content)
-                else:
-                    await target_channel.send(task.content)
+                        image_paths = [task.image_path]
+                    image_paths = [path for path in image_paths if os.path.exists(path)]
 
-            # 增加评论计数
-            self.comment_count_since_rotation += 1
+                if image_paths:
+                    files = [discord.File(path) for path in image_paths]
+                    if task.content.strip():
+                        if message:
+                            await message.reply(task.content, files=files)
+                        else:
+                            await target_channel.send(task.content, files=files)
+                    else:
+                        if message:
+                            await message.reply(files=files)
+                        else:
+                            await target_channel.send(files=files)
+                else:
+                    if task.content.strip():
+                        if message:
+                            await message.reply(task.content)
+                        else:
+                            await target_channel.send(task.content)
+                    else:
+                        if message:
+                            await message.reply()
+                        else:
+                            await target_channel.send()
+
+                success_count += 1
 
             if self.log_callback:
-                rotation_info = f" (轮换计数: {self.comment_count_since_rotation}/{self.comment_rotation_count})" if self.comment_rotation_enabled else ""
-                self.log_callback(f"✅ [{account.alias}] 评论成功: '{task.content[:50]}...'{rotation_info}")
+                self.log_callback(f"✅ [{account.alias}] 成功发送 {success_count}/{len(links)} 条评论")
 
-            # 移除已完成的任务
-            self.comment_tasks.remove(task)
-            return True
+            self.comment_count_since_rotation += 1
 
         except Exception as e:
             if self.log_callback:

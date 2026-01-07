@@ -409,11 +409,10 @@ class RuleDialog(QDialog):
         layout.addWidget(self.case_sensitive_checkbox)
         layout.addWidget(self.ignore_mentions_checkbox)
 
-        # 图片回复
         image_layout = QHBoxLayout()
-        image_layout.addWidget(QLabel("图片回复 (可选):"))
+        image_layout.addWidget(QLabel("图片回复 (可选，支持多选):"))
         self.image_path_input = QLineEdit()
-        self.image_path_input.setPlaceholderText("选择图片文件路径...")
+        self.image_path_input.setPlaceholderText("选择图片文件路径（多个用分号或逗号分隔）...")
         if self.rule and self.rule.image_path:
             self.image_path_input.setText(self.rule.image_path)
         image_layout.addWidget(self.image_path_input)
@@ -421,6 +420,10 @@ class RuleDialog(QDialog):
         browse_button = QPushButton("浏览...")
         browse_button.clicked.connect(self.browse_image)
         image_layout.addWidget(browse_button)
+
+        clear_button = QPushButton("清空")
+        clear_button.clicked.connect(lambda: self.image_path_input.clear())
+        image_layout.addWidget(clear_button)
 
         layout.addLayout(image_layout)
 
@@ -502,15 +505,22 @@ class RuleDialog(QDialog):
         }
 
     def browse_image(self):
-        """浏览选择图片文件"""
         file_dialog = QFileDialog(self)
         file_dialog.setNameFilter("图片文件 (*.png *.jpg *.jpeg *.gif *.bmp *.webp)")
-        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
+        file_dialog.setFileMode(QFileDialog.FileMode.ExistingFiles)
 
         if file_dialog.exec():
             selected_files = file_dialog.selectedFiles()
             if selected_files:
-                self.image_path_input.setText(selected_files[0])
+                current_text = self.image_path_input.text().strip()
+                new_files = ";".join(selected_files)
+
+                if current_text:
+                    combined = current_text + ";" + new_files
+                    files_list = list(set(combined.split(";")))
+                    self.image_path_input.setText(";".join(files_list))
+                else:
+                    self.image_path_input.setText(new_files)
 
 
 class WorkerThread(QThread):
@@ -3041,15 +3051,25 @@ class CommentTaskDialog(QDialog):
         self.task = task
         self.setWindowTitle("编辑评论任务" if task else "添加评论任务")
         self.setModal(True)
-        self.resize(500, 400)
+        self.resize(500, 450)
 
         layout = QVBoxLayout(self)
 
-        # 消息链接
         link_layout = QVBoxLayout()
-        link_layout.addWidget(QLabel("消息链接:"))
-        self.link_input = QLineEdit()
-        self.link_input.setPlaceholderText("Discord消息链接 (https://discord.com/channels/.../...)")
+        link_label = QLabel("消息ID或链接（支持多个，每行一个或用分号分隔）:")
+        link_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        link_layout.addWidget(link_label)
+
+        self.link_input = QTextEdit()
+        self.link_input.setMaximumHeight(100)
+        self.link_input.setPlaceholderText(
+            "示例（每行一个）：\n"
+            "1234567890\n"
+            "https://discord.com/channels/123/456/789\n"
+            "\n"
+            "或用分号分隔：\n"
+            "1234567890;9876543210"
+        )
         link_layout.addWidget(self.link_input)
         layout.addLayout(link_layout)
 
@@ -3113,33 +3133,27 @@ class CommentTaskDialog(QDialog):
                     self.image_input.setText(new_files)
 
     def get_data(self):
-        """获取对话框数据"""
         return {
-            'message_link': self.link_input.text().strip(),
+            'message_link': self.link_input.toPlainText().strip(),
             'content': self.content_input.toPlainText().strip(),
             'image_path': self.image_input.text().strip() or None,
-            'delay_seconds': 0  # 使用全局评论间隔，不再有单独延时
+            'delay_seconds': 0
         }
 
-        # 加载任务数据（用于编辑模式）
         self.load_task_data()
 
     def showEvent(self, event):
-        """对话框显示事件"""
         super().showEvent(event)
-        # 在对话框显示时加载任务数据
         self.load_task_data()
 
     def load_task_data(self):
-        """加载任务数据到对话框（用于编辑）"""
         if self.task:
             if hasattr(self, 'link_input'):
-                self.link_input.setText(self.task.message_link)
+                self.link_input.setPlainText(self.task.message_link)
             if hasattr(self, 'content_input'):
                 self.content_input.setPlainText(self.task.content)
             if hasattr(self, 'image_input'):
                 self.image_input.setText(self.task.image_path or "")
-            # 不再设置delay_spin，因为已移除
 
 
 
