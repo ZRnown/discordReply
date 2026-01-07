@@ -20,11 +20,18 @@
 **问题**：
 - main() 函数被 `asyncio.run()` 包裹
 - PySide6 的事件循环与 asyncio 的事件循环冲突
+- RuleDialog 不支持多选图片
+- CommentTaskDialog 不支持多个消息 ID
 
 **修复**：
-- ✅ 移除 `asyncio.run(main())`
-- ✅ 直接调用 `main()` 并返回退出码
+- ✅ 移除 `asyncio.run()`，直接调用 `main()` 并返回退出码
 - ✅ 让 PySide6 的 `app.exec()` 接管主线程的事件循环
+- ✅ **RuleDialog 图片输入改为多选模式（ExistingFiles）**
+- ✅ **RuleDialog 图片路径支持分号或逗号分隔多个文件**
+- ✅ **RuleDialog 添加清空按钮方便管理图片**
+- ✅ **CommentTaskDialog 链接输入改为多行文本框**
+- ✅ **CommentTaskDialog 支持每行一个 ID/链接，或用分号分隔**
+- ✅ **CommentTaskDialog 添加详细的示例说明**
 
 ### 3. src/config_manager.py
 **问题**：
@@ -36,7 +43,19 @@
 - ✅ 在 EXE 环境下使用 `sys.executable.parent`
 - ✅ 在开发环境下保持原有逻辑
 
-### 4. .github/workflows/build-windows-exe.yml
+### 4. src/discord_client.py
+**问题**：
+- execute_comment_task 只支持单个消息 ID
+- 无法一次性评论多个目标
+
+**修复**：
+- ✅ **execute_comment_task 支持解析多个消息 ID/链接**
+- ✅ 支持按换行或分号分隔多个 ID
+- ✅ 逐个处理每个 ID/链接
+- ✅ 每个评论独立发送，单独计数
+- ✅ 保持多图支持（已存在）
+
+### 5. .github/workflows/build-windows-exe.yml
 **问题**：
 - 缺少必要的 Nuitka 插件
 - 缺少包含关键包
@@ -46,13 +65,13 @@
 
 **修复**：
 - ✅ 添加 `--enable-plugin=pyside6`
-- ✅ 添加 `--include-package=discord`, `aiohttp`, `asyncio`
-- ✅ 添加 `--include-data-dir=config=config`（包含目录）
+- ✅ 添加 `--include-package=discord`, `aiohttp`, `asyncio`, `src.*`
+- ✅ 添加 `--include-data-dir=config=config`
 - ✅ 使用 `--windows-console-mode=disable`
 - ✅ 添加 `shell: cmd` 指定使用 CMD shell
 - ✅ 添加配置目录创建步骤
 
-### 5. build_exe.py
+### 6. build_exe.py
 **问题**：
 - 使用错误的插件（tk-inter 而不是 pyside6）
 - 缺少包含关键包
