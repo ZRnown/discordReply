@@ -12,8 +12,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont, QIcon, QColor
 
-from discord_client import DiscordManager, Account, Rule, MatchType
-from config_manager import ConfigManager
+from .discord_client import DiscordManager, Account, Rule, MatchType
+from .config_manager import ConfigManager
 
 
 class LicenseVerifyThread(QThread):

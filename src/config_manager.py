@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any
 from dataclasses import asdict
-from discord_client import Account, Rule, MatchType, PostingTask, CommentTask
+from .discord_client import Account, Rule, MatchType, PostingTask, CommentTask
 
 
 class ConfigManager:

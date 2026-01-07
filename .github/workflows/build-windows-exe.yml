@@ -34,7 +34,7 @@ jobs:
       - name: Build EXE
         shell: cmd
         run: |
-          python -m nuitka --standalone --onefile --windows-uac-admin --windows-console-mode=disable --enable-plugin=pyside6 --enable-plugin=multiprocessing --include-package=discord --include-package=aiohttp --include-package=asyncio --include-data-dir=config=config --assume-yes-for-downloads --output-filename=DiscordAutoReply.exe --output-dir=dist run.py
+          python -m nuitka --standalone --onefile --windows-uac-admin --windows-console-mode=disable --enable-plugin=pyside6 --enable-plugin=multiprocessing --include-package=discord --include-package=aiohttp --include-package=asyncio --include-package=src --include-package=src.discord_client --include-package=src.config_manager --include-package=src.gui --include-data-dir=config=config --assume-yes-for-downloads --output-filename=DiscordAutoReply.exe --output-dir=dist run.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
