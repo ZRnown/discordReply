@@ -1325,11 +1325,14 @@ class LicenseManager:
 
     def __init__(self, license_server_url: str = "https://license.thy1cc.top",
                  client_username: str = "client", client_password: str = "",
+                 admin_username: str = None, admin_password: str = None,
                  api_path: str = "/api/v1"):
         self.license_server_url = license_server_url.rstrip('/')
         self.api_path = api_path  # API路径，如 /api/v1
         self.client_username = client_username
         self.client_password = client_password
+        self.admin_username = admin_username  # 管理员用户名（用于激活）
+        self.admin_password = admin_password  # 管理员密码（用于激活）
         self.license_key: Optional[str] = None
         self.machine_fingerprint: str = self._generate_machine_fingerprint()
         self.is_activated: bool = False
@@ -1363,26 +1366,20 @@ class LicenseManager:
                     if response.status == 200:
                         data = await response.json()
                         if data.get("message") == "License is valid":
-                            # 检查是否需要绑定机器
+                            # 检查许可证状态
                             license_details = data.get("license-details", {})
                             machine_node = license_details.get("machine-node")
 
-                            if machine_node == "NOT_ACTIVATED":
-                                # 需要激活，绑定到当前机器
-                                success, msg = await self._activate_license(license_key)
-                                if success:
-                                    self.license_key = license_key
-                                    self.is_activated = True
-                                    self.license_info = license_details
-                                    return True, f"许可证激活成功: {license_details.get('name', 'Unknown')}"
-                                else:
-                                    return False, f"许可证激活失败: {msg}"
+                            if machine_node == "NOT_ACTIVATED" or machine_node.startswith("PENDING_"):
+                                # 许可证未激活，可以使用
+                                # 注意：这里不自动激活，需要用户手动激活
+                                return True, f"许可证有效 (未激活): {license_details.get('name', 'Unknown')}"
                             elif machine_node == self.machine_fingerprint:
                                 # 已绑定到当前机器
                                 self.license_key = license_key
                                 self.is_activated = True
                                 self.license_info = license_details
-                                return True, f"许可证有效: {license_details.get('name', 'Unknown')}"
+                                return True, f"许可证有效 (已激活): {license_details.get('name', 'Unknown')}"
                             else:
                                 # 已绑定到其他机器
                                 return False, "此许可证已绑定到其他设备"
@@ -1405,13 +1402,33 @@ class LicenseManager:
 
         return False, "未知错误"
 
+    async def activate_license(self, license_key: str) -> Tuple[bool, str]:
+        """激活许可证并绑定到当前机器"""
+        # 首先验证许可证是否存在且未激活
+        is_valid, message = await self.validate_license(license_key)
+        if not is_valid:
+            return False, f"无法激活: {message}"
+
+        # 如果验证通过，执行激活
+        return await self._activate_license(license_key)
+
     async def _activate_license(self, license_key: str) -> Tuple[bool, str]:
         """激活许可证，绑定到当前机器"""
         try:
-            # 设置认证
+            # 设置认证 - 激活需要管理员权限
             auth = None
-            if self.client_username and self.client_password:
+            # 如果有管理员认证信息，使用管理员认证；否则使用客户端认证
+            admin_username = getattr(self, 'admin_username', None)
+            admin_password = getattr(self, 'admin_password', None)
+
+            if admin_username and admin_password:
+                auth = aiohttp.BasicAuth(admin_username, admin_password)
+                print(f"使用管理员认证激活许可证: {admin_username}")
+            elif self.client_username and self.client_password:
                 auth = aiohttp.BasicAuth(self.client_username, self.client_password)
+                print(f"使用客户端认证激活许可证: {self.client_username}")
+            else:
+                return False, "激活失败: 未配置认证信息"
 
             async with aiohttp.ClientSession(auth=auth) as session:
                 # 更新许可证信息，绑定到当前机器
@@ -1426,7 +1443,7 @@ class LicenseManager:
                     if response.status == 200:
                         return True, "激活成功"
                     elif response.status == 403:
-                        return False, f"激活失败: 认证信息无效 (HTTP 403)"
+                        return False, f"激活失败: 管理员认证信息无效 (HTTP 403)\n请在\"状态监控\"→\"配置服务器\"中设置正确的管理员用户名和密码"
                     else:
                         return False, f"激活失败: HTTP {response.status}"
 
