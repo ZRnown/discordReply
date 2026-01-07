@@ -9,7 +9,7 @@
   "rules": [
     {
       "keywords": ["你好", "hello", "hi"],
-      "reply": "你好！我是自动回复机器人。",
+      "reply": "你好！我是自动回复助手。",
       "match_type": "partial",
       "target_channels": [],
       "delay_min": 2.0,

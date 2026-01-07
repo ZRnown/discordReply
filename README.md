@@ -1,15 +1,15 @@
-# Discord Auto Reply Tool
+# Auto Reply Tool
 
-一个强大的 Discord 自动回复工具，支持多账号、定时任务、图片发送等功能。
+一个强大的自动回复工具，支持多账号、定时任务、图片发送等功能。
 
 ## 🚀 功能特性
 
 - **自动回复**: 基于关键词的智能回复系统
 - **定时发帖**: 支持在指定频道定时发布内容
 - **评论任务**: 支持回复特定消息或在频道发消息
-- **多账号支持**: 同时管理多个 Discord 账号
+- **多账号支持**: 同时管理多个账号
 - **图片发送**: 支持发送单张或多张图片
-- **Thread 支持**: 支持在 Discord 论坛频道发帖
+- **Thread 支持**: 支持在论坛频道发帖
 - **任务调度**: 智能的任务执行调度
 
 ## 📦 构建 Windows EXE
@@ -30,8 +30,8 @@
 ### 构建产物
 
 构建完成后会生成以下文件：
-- `DiscordAutoReply.exe` - 主可执行文件
-- `DiscordAutoReply-{version}-windows.zip` - ZIP 归档
+- `AutoReply.exe` - 主可执行文件
+- `AutoReply-{version}-windows.zip` - ZIP 归档
 
 ### 本地构建
 
@@ -49,11 +49,11 @@ python build_exe.py
 
 ### 基本使用
 
-1. 下载并运行 `DiscordAutoReply.exe`
-2. 添加 Discord 账号 Token
+1. 下载并运行 `AutoReply.exe`
+2. 添加账号 Token
 3. 配置自动回复规则
 4. 设置定时发帖任务
-5. 启动机器人
+5. 启动账号
 
 ### 评论任务格式
 
@@ -74,7 +74,7 @@ python build_exe.py
 
 ```
 ├── src/
-│   ├── discord_client.py    # Discord 客户端核心逻辑
+│   ├── discord_client.py    # 客户端核心逻辑
 │   ├── gui.py              # PySide6 图形界面
 │   ├── config_manager.py   # 配置管理
 │   └── main.py             # 程序入口
@@ -101,11 +101,11 @@ python run.py
 
 ## 📄 许可证
 
-本项目仅供学习和研究使用，请遵守 Discord 服务条款。
+本项目仅供学习和研究使用，请遵守相关服务条款。
 
 ## ⚠️ 免责声明
 
-- 请勿用于违反 Discord 服务条款的行为
+- 请勿用于违反服务条款的行为
 - 请勿用于发送垃圾信息或骚扰其他用户
 - 使用本工具产生的任何后果由使用者自行承担
 - 建议仅在自己的服务器上测试使用

@@ -1395,6 +1395,8 @@ class LicenseManager:
                     elif response.status == 404:
                         return False, "许可证不存在"
 
+                    elif response.status == 403:
+                        return False, f"认证失败: 用户名或密码错误 (HTTP 403)"
                     else:
                         return False, f"验证失败: HTTP {response.status}"
 
@@ -1423,6 +1425,8 @@ class LicenseManager:
                 async with session.patch(update_url, json=payload) as response:
                     if response.status == 200:
                         return True, "激活成功"
+                    elif response.status == 403:
+                        return False, f"激活失败: 认证信息无效 (HTTP 403)"
                     else:
                         return False, f"激活失败: HTTP {response.status}"
 

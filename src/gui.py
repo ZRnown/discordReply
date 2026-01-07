@@ -65,10 +65,10 @@ class AccountDialog(QDialog):
 
         # Token输入
         token_layout = QHBoxLayout()
-        token_layout.addWidget(QLabel("Discord Token:"))
+        token_layout.addWidget(QLabel("Token:"))
         self.token_input = QLineEdit()
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token_input.setPlaceholderText("输入Discord用户Token（非机器人Token）")
+        self.token_input.setPlaceholderText("输入用户Token")
         if self.account:
             self.token_input.setText(self.account.token)
         self.token_input.textChanged.connect(self.on_token_changed)
@@ -82,7 +82,7 @@ class AccountDialog(QDialog):
         # 帮助按钮
         help_btn = QPushButton("❓")
         help_btn.setMaximumWidth(30)
-        help_btn.setToolTip("如何获取Discord Token")
+        help_btn.setToolTip("如何获取Token")
         help_btn.clicked.connect(self.show_token_help)
         token_layout.addWidget(help_btn)
 
@@ -166,7 +166,7 @@ class AccountDialog(QDialog):
 
         try:
             # 更新状态：正在连接
-            self.status_label.setText("🔗 正在连接Discord服务器...")
+            self.status_label.setText("🔗 正在连接服务器...")
             self.status_label.setStyleSheet("color: blue;")
             QApplication.processEvents()
 
@@ -234,22 +234,22 @@ class AccountDialog(QDialog):
     def show_token_help(self):
         """显示Token获取帮助"""
         help_text = """
-        <h3>如何获取Discord Token</h3>
+        <h3>如何获取Token</h3>
 
         <p><b>重要提醒：</b>请谨慎使用Token，不要泄露给他人！</p>
 
         <h4>获取用户Token（推荐用于个人使用）：</h4>
         <ol>
-        <li>打开Discord网页版或桌面客户端</li>
+        <li>打开网页版或桌面客户端</li>
         <li>按 <b>F12</b> 打开开发者工具</li>
         <li>切换到 <b>Application</b> 标签页</li>
-        <li>在左侧选择 <b>Local Storage</b> → <b>https://discord.com</b></li>
+        <li>在左侧选择 <b>Local Storage</b> → <b>https://相关域名</b></li>
         <li>找到 <b>token</b> 字段</li>
         <li>复制 <b>value</b> 列的值（不包含引号）</li>
         </ol>
 
         <h4>Token格式示例：</h4>
-        <p><code>mfa.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</code></p>
+        <p><code>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</code></p>
         <p>或</p>
         <p><code>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</code></p>
 
@@ -263,7 +263,7 @@ class AccountDialog(QDialog):
         <p><b>注意：</b>Token会定期过期，建议定期更新。</p>
         """
 
-        QMessageBox.information(self, "Discord Token获取指南",
+        QMessageBox.information(self, "Token获取指南",
                                help_text, QMessageBox.StandardButton.Ok)
 
     def accept_and_validate(self):
@@ -548,7 +548,7 @@ class WorkerThread(QThread):
     async def _run_clients(self):
         """启动客户端并定期更新状态"""
         try:
-            self.log_message.emit("开始启动Discord客户端...")
+            self.log_message.emit("开始启动客户端...")
             await self.discord_manager.start_all_clients()
             self.running = True
 
@@ -586,9 +586,9 @@ class WorkerThread(QThread):
             total_count = len(status["accounts"])
 
             if running_count > 0:
-                self.log_message.emit(f"✅ Discord客户端启动完成 - {running_count}/{total_count} 个客户端运行中")
+                self.log_message.emit(f"✅ 客户端启动完成 - {running_count}/{total_count} 个客户端运行中")
             else:
-                self.log_message.emit("❌ Discord客户端启动失败 - 没有客户端成功连接")
+                self.log_message.emit("❌ 客户端启动失败 - 没有客户端成功连接")
 
             while self.running:
                 try:
@@ -611,7 +611,7 @@ class WorkerThread(QThread):
             # 任务被取消，正常停止
             self.log_message.emit("接收到停止信号，正在停止客户端...")
         except Exception as e:
-            error_msg = f"Discord客户端运行错误: {str(e)}"
+            error_msg = f"客户端运行错误: {str(e)}"
             self.log_message.emit(error_msg)
 
             # 特殊处理SSL错误
@@ -628,13 +628,13 @@ class WorkerThread(QThread):
             try:
                 self.log_message.emit("正在清理资源...")
                 await self.discord_manager.stop_all_clients()
-                self.log_message.emit("Discord客户端已完全停止")
+                self.log_message.emit("客户端已完全停止")
             except Exception as cleanup_error:
                 self.log_message.emit(f"清理资源时出错: {cleanup_error}")
 
     def stop(self):
         """停止工作线程"""
-        print("正在停止Discord工作线程...")
+        print("正在停止工作线程...")
         self.running = False
 
         # 这种方式并不总是能优雅地停止 asyncio.run()，但在 WorkerThread 模型中，
@@ -668,7 +668,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """初始化用户界面"""
-        self.setWindowTitle("Discord 自动回复工具")
+        self.setWindowTitle("自动回复工具")
         self.setGeometry(100, 100, 1200, 800)
 
         # 创建中央部件
@@ -752,7 +752,7 @@ class MainWindow(QMainWindow):
 
         # 标题和操作按钮
         header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("Discord 账号管理"))
+        header_layout.addWidget(QLabel("账号管理"))
 
         header_layout.addStretch()
 
@@ -1166,11 +1166,11 @@ class MainWindow(QMainWindow):
         control_layout = QHBoxLayout()
 
         # 启动/停止按钮组
-        button_group = QGroupBox("机器人控制")
+        button_group = QGroupBox("账号控制")
         button_layout = QHBoxLayout(button_group)
 
         # 机器人控制按钮（单个切换按钮）
-        self.bot_toggle_button = QPushButton("▶️ 启动机器人")
+        self.bot_toggle_button = QPushButton("▶️ 启动账号")
         self.bot_toggle_button.setCheckable(True)
         self.bot_toggle_button.setChecked(False)  # 默认未启动
         self.bot_toggle_button.setStyleSheet("""
@@ -1207,6 +1207,9 @@ class MainWindow(QMainWindow):
 
         # 功能控制按钮组
         function_group = QGroupBox("功能控制")
+
+        # 机器人控制按钮组
+        button_group = QGroupBox("账号控制")
         function_layout = QHBoxLayout(function_group)
 
         # 自动回复按钮
@@ -2211,7 +2214,7 @@ class MainWindow(QMainWindow):
 
 
     def start_bot(self):
-        """启动机器人"""
+        """启动账号"""
         self.add_log("🔄 正在检查启动条件...", "info")
 
         if not self.discord_manager.accounts:
@@ -2233,7 +2236,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self.add_log("🚀 正在启动Discord机器人...", "info")
+            self.add_log("🚀 正在启动账号...", "info")
 
             self.worker_thread = WorkerThread(self.discord_manager)
             self.worker_thread.status_updated.connect(self.update_status)
@@ -2243,9 +2246,9 @@ class MainWindow(QMainWindow):
 
             # 更新切换按钮状态
             self.bot_toggle_button.setChecked(True)
-            self.bot_toggle_button.setText("⏹️ 停止机器人")
+            self.bot_toggle_button.setText("⏹️ 停止账号")
 
-            self.add_log("✅ 机器人启动命令已发送，正在连接Discord服务器...", "success")
+            self.add_log("✅ 账号启动命令已发送，正在连接服务器...", "success")
 
         except Exception as e:
             error_msg = f"启动失败: {str(e)}"
@@ -2253,42 +2256,42 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", error_msg)
             # 启动失败时重置按钮状态
             self.bot_toggle_button.setChecked(False)
-            self.bot_toggle_button.setText("▶️ 启动机器人")
+            self.bot_toggle_button.setText("▶️ 启动账号")
 
     def stop_bot(self):
-        """停止机器人"""
+        """停止账号"""
         if self.worker_thread:
-            self.add_log("正在停止机器人...", "info")
+            self.add_log("正在停止账号...", "info")
 
             # 设置停止标志
             self.worker_thread.running = False
 
             # 等待线程完成，最多等待12秒（增加等待时间）
             if self.worker_thread.wait(12000):  # 增加等待时间到12秒
-                self.add_log("机器人停止完成", "success")
+                self.add_log("账号停止完成", "success")
             else:
-                self.add_log("机器人停止超时，但后台清理将继续进行", "warning")
+                self.add_log("账号停止超时，但后台清理将继续进行", "warning")
 
             # 清理线程
             self.worker_thread = None
 
             # 更新切换按钮状态
             self.bot_toggle_button.setChecked(False)
-            self.bot_toggle_button.setText("▶️ 启动机器人")
+            self.bot_toggle_button.setText("▶️ 启动账号")
 
             # 强制更新状态显示
             self.update_status()
 
             # 添加最终日志
-            self.add_log("机器人已停止", "info")
+            self.add_log("账号已停止", "info")
 
     def toggle_bot(self):
-        """切换机器人启动/停止状态"""
+        """切换账号启动/停止状态"""
         if self.bot_toggle_button.isChecked():
-            # 启动机器人
+            # 启动账号
             self.start_bot()
         else:
-            # 停止机器人
+            # 停止账号
             self.stop_bot()
 
     def add_log(self, message, level="info"):
@@ -2505,7 +2508,14 @@ class MainWindow(QMainWindow):
         else:
             self.license_status_display.setText(f"❌ 验证失败: {message}")
             self.license_status_display.setStyleSheet("color: red;")
-            QMessageBox.warning(dialog, "验证失败", message)
+
+            # 提供更友好的错误提示
+            if "403" in message or "认证失败" in message:
+                friendly_message = f"{message}\n\n请检查：\n1. 许可证密钥是否正确\n2. 网络连接是否正常\n3. 如有疑问请联系客服"
+            else:
+                friendly_message = message
+
+            QMessageBox.warning(dialog, "验证失败", friendly_message)
 
     def on_license_verify_error(self, dialog, error):
         """许可证验证错误"""
