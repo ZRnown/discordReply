@@ -8,18 +8,20 @@ import os
 from pathlib import Path
 
 def main():
-    # 1. 路径设置 - 修复打包后的工作目录问题
     if getattr(sys, 'frozen', False):
-        # 运行在打包后的 EXE 中
         exe_dir = Path(sys.executable).parent
         os.chdir(exe_dir)
         project_root = exe_dir
     else:
-        # 运行在开发环境中
         project_root = Path(__file__).parent
 
     src_dir = project_root / "src"
-    sys.path.insert(0, str(src_dir))
+
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
     # 2. 依赖检查
     try:
