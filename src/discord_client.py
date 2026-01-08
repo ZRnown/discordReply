@@ -1441,6 +1441,9 @@ class LicenseManager:
 
                 async with session.patch(update_url, json=payload) as response:
                     if response.status == 200:
+                        # 激活成功，更新内部状态
+                        self.is_activated = True
+                        self.license_key = license_key
                         return True, "激活成功"
                     elif response.status == 403:
                         return False, f"激活失败: 管理员认证信息无效 (HTTP 403)\n请在\"状态监控\"→\"配置服务器\"中设置正确的管理员用户名和密码"

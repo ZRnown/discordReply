@@ -965,14 +965,6 @@ class MainWindow(QMainWindow):
         self.license_status_label.setStyleSheet("font-weight: bold;")
         license_layout.addWidget(self.license_status_label)
 
-        # 许可证操作按钮
-        license_buttons_layout = QHBoxLayout()
-
-        reverify_license_btn = QPushButton("重新验证许可证")
-        reverify_license_btn.clicked.connect(self.reverify_license)
-        license_buttons_layout.addWidget(reverify_license_btn)
-
-        license_layout.addLayout(license_buttons_layout)
 
         layout.addWidget(license_group)
 
@@ -1009,53 +1001,6 @@ class MainWindow(QMainWindow):
 
         self.tab_widget.addTab(status_widget, "状态监控")
 
-    def reverify_license(self):
-        """重新验证当前已保存的许可证"""
-        # 从配置中读取许可证密钥
-        license_config = self.config_manager.load_config()[2]  # 获取许可证配置
-        license_key = license_config.get("license_key", "").strip()
-
-        if not license_key:
-            # 没有配置许可证密钥，提示用户输入
-            QMessageBox.warning(self, "没有许可证", "当前没有保存的许可证密钥，请先输入许可证。")
-            self.show_license_input_dialog()
-            return
-
-        try:
-            # 重新验证当前许可证
-            self.add_log("🔄 正在重新验证许可证...", "info")
-
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            success, message = loop.run_until_complete(
-                self.discord_manager.license_manager.validate_license(license_key)
-            )
-            loop.close()
-
-            if success:
-                self.add_log(f"✅ 许可证验证成功: {message}", "success")
-                QMessageBox.information(self, "验证成功", f"许可证验证成功！\n\n{message}")
-            else:
-                self.add_log(f"❌ 许可证验证失败: {message}", "error")
-                reply = QMessageBox.question(
-                    self, "验证失败",
-                    f"许可证验证失败：{message}\n\n"
-                    "是否重新输入许可证密钥？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.show_license_input_dialog()
-                else:
-                    QMessageBox.information(self, "提示", "您可以稍后重新验证许可证。")
-
-        except Exception as e:
-            self.add_log(f"❌ 验证过程中发生错误: {e}", "error")
-            QMessageBox.critical(self, "错误", f"验证过程中发生错误：{e}")
-
-        # 更新许可证状态显示
-        self.update_license_status()
 
     def show_license_server_config(self):
         """显示许可证服务器配置对话框"""
@@ -2825,11 +2770,6 @@ class MainWindow(QMainWindow):
         verify_button.clicked.connect(lambda: self.verify_license_key(dialog))
         button_layout.addWidget(verify_button)
 
-        test_button = QPushButton("测试")
-        test_button.setToolTip("测试许可证密钥而不保存")
-        test_button.clicked.connect(lambda: self.test_license_key(dialog))
-        button_layout.addWidget(test_button)
-
         cancel_button = QPushButton("取消")
         cancel_button.clicked.connect(dialog.reject)
         button_layout.addWidget(cancel_button)
@@ -2872,40 +2812,6 @@ class MainWindow(QMainWindow):
         self.license_verify_thread.finished.connect(lambda success, message: self.on_license_verify_finished(dialog, success, message))
         self.license_verify_thread.error.connect(lambda error: self.on_license_verify_error(dialog, error))
         self.license_verify_thread.start()
-
-    def test_license_key(self, dialog):
-        """测试许可证密钥（不保存）"""
-        license_key = self.license_key_input.text().strip()
-        if not license_key:
-            QMessageBox.warning(dialog, "警告", "请输入许可证密钥")
-            return
-
-        self.license_status_display.setText("🔄 正在测试许可证...")
-        self.license_status_display.setStyleSheet("color: blue;")
-
-        # 在新线程中测试许可证（仅验证，不激活）
-        self.license_verify_thread = LicenseVerifyThread(self.discord_manager.license_manager, license_key, activate=False)
-        self.license_verify_thread.finished.connect(lambda success, message: self.on_license_test_finished(dialog, success, message))
-        self.license_verify_thread.error.connect(lambda error: self.on_license_verify_error(dialog, error))
-        self.license_verify_thread.start()
-
-    def on_license_test_finished(self, dialog, success, message):
-        """许可证测试完成"""
-        if success:
-            self.license_status_display.setText(f"✅ 测试成功: {message}")
-            self.license_status_display.setStyleSheet("color: green;")
-            QMessageBox.information(dialog, "测试成功", f"许可证测试成功!\n{message}\n\n点击'验证'按钮保存此许可证。")
-        else:
-            self.license_status_display.setText(f"❌ 测试失败: {message}")
-            self.license_status_display.setStyleSheet("color: red;")
-
-            # 提供更友好的错误提示
-            if "403" in message or "认证失败" in message:
-                friendly_message = f"{message}\n\n请检查：\n1. 许可证密钥是否正确\n2. 网络连接是否正常\n3. 如有疑问请联系客服"
-            else:
-                friendly_message = message
-
-            QMessageBox.warning(dialog, "测试失败", friendly_message)
 
     def on_license_verify_finished(self, dialog, success, message):
         """许可证验证完成"""
