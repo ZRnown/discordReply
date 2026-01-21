@@ -59,7 +59,21 @@ def license_check():
     """许可证预检查"""
     try:
         from discord_client import LicenseManager
+        from config_manager import ConfigManager
         license_manager = LicenseManager()
+
+        config_manager = ConfigManager()
+        license_config = config_manager.load_config()[2]
+        license_key = license_config.get("license_key", "").strip()
+        saved_hwid = license_config.get("hwid")
+        is_activated = license_config.get("is_activated", False)
+        license_info = license_config.get("license_info")
+
+        if license_key and is_activated and saved_hwid == license_manager.machine_fingerprint:
+            license_manager.license_key = license_key
+            license_manager.is_activated = True
+            if isinstance(license_info, dict):
+                license_manager.license_info = license_info
 
         # 尝试加载已保存的许可证信息
         # 这里可以添加从配置文件加载许可证的逻辑

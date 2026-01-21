@@ -69,16 +69,14 @@ class LicenseServerTestThread(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # 测试基本的服务器连接（通过验证一个不存在的许可证来测试认证）
+            # 测试基本的服务器连接（通过验证一个不存在的许可证）
             success, message = loop.run_until_complete(
                 self.license_manager.validate_license("test-connection-key")
             )
 
-            # 如果返回"许可证不存在"，说明认证成功，服务器连接正常
-            if "许可证不存在" in message or "License is expired" in message:
+            # 如果返回"密钥不存在"，说明服务器连接正常
+            if "密钥不存在" in message or "已失效" in message:
                 self.finished.emit(True, "服务器连接正常")
-            elif "403" in message or "认证失败" in message:
-                self.finished.emit(False, "认证失败：用户名或密码错误")
             else:
                 self.finished.emit(False, f"连接测试失败: {message}")
 
@@ -1005,67 +1003,23 @@ class MainWindow(QMainWindow):
     def show_license_server_config(self):
         """显示许可证服务器配置对话框"""
         dialog = QDialog(self)
-        dialog.setWindowTitle("许可证服务器配置")
+        dialog.setWindowTitle("许可证服务器信息")
         dialog.setModal(True)
-        dialog.resize(400, 250)
+        dialog.resize(400, 180)
 
         layout = QVBoxLayout(dialog)
 
         # 标题
-        title_label = QLabel("配置许可证服务器认证信息")
+        title_label = QLabel("服务器地址已固定，无需配置")
         title_label.setStyleSheet("font-size: 14px; font-weight: bold; margin-bottom: 10px;")
         layout.addWidget(title_label)
-
-        # 用户名输入
-        username_layout = QHBoxLayout()
-        username_layout.addWidget(QLabel("用户名:"))
-        self.server_username_input = QLineEdit()
-        self.server_username_input.setText(self.discord_manager.license_client_username or "client")
-        username_layout.addWidget(self.server_username_input)
-        layout.addLayout(username_layout)
-
-        # 密码输入
-        password_layout = QHBoxLayout()
-        password_layout.addWidget(QLabel("密码:"))
-        self.server_password_input = QLineEdit()
-        self.server_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.server_password_input.setText(self.discord_manager.license_client_password or "qq1383766")
-        self.server_password_input.setToolTip("客户端密码，用于验证许可证")
-        password_layout.addWidget(self.server_password_input)
-        layout.addLayout(password_layout)
-
-        # 管理员用户名输入
-        admin_username_layout = QHBoxLayout()
-        admin_username_layout.addWidget(QLabel("管理员用户名:"))
-        self.server_admin_username_input = QLineEdit()
-        self.server_admin_username_input.setText(getattr(self.discord_manager.license_manager, 'admin_username', None) or "admin")
-        self.server_admin_username_input.setToolTip("管理员用户名，用于激活许可证")
-        admin_username_layout.addWidget(self.server_admin_username_input)
-        layout.addLayout(admin_username_layout)
-
-        # 管理员密码输入
-        admin_password_layout = QHBoxLayout()
-        admin_password_layout.addWidget(QLabel("管理员密码:"))
-        self.server_admin_password_input = QLineEdit()
-        self.server_admin_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.server_admin_password_input.setText(getattr(self.discord_manager.license_manager, 'admin_password', None) or "qq1383766")
-        self.server_admin_password_input.setToolTip("管理员密码，用于激活许可证")
-        admin_password_layout.addWidget(self.server_admin_password_input)
-        layout.addLayout(admin_password_layout)
-
-        # API路径输入
-        api_layout = QHBoxLayout()
-        api_layout.addWidget(QLabel("API路径:"))
-        self.server_api_input = QLineEdit()
-        self.server_api_input.setText("/api/v1")
-        api_layout.addWidget(self.server_api_input)
-        layout.addLayout(api_layout)
 
         # 服务器URL输入
         url_layout = QHBoxLayout()
         url_layout.addWidget(QLabel("服务器URL:"))
         self.server_url_input = QLineEdit()
-        self.server_url_input.setText("https://license.thy1cc.top")
+        self.server_url_input.setText(self.discord_manager.license_manager.license_server_url)
+        self.server_url_input.setReadOnly(True)
         url_layout.addWidget(self.server_url_input)
         layout.addLayout(url_layout)
 
@@ -1081,13 +1035,9 @@ class MainWindow(QMainWindow):
         test_connection_btn.clicked.connect(lambda: self.test_server_connection(dialog))
         button_layout.addWidget(test_connection_btn)
 
-        save_btn = QPushButton("保存")
-        save_btn.clicked.connect(lambda: self.save_server_config(dialog))
-        button_layout.addWidget(save_btn)
-
-        cancel_btn = QPushButton("取消")
-        cancel_btn.clicked.connect(dialog.reject)
-        button_layout.addWidget(cancel_btn)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_btn)
 
         layout.addLayout(button_layout)
 
@@ -1095,16 +1045,7 @@ class MainWindow(QMainWindow):
 
     def test_server_connection(self, dialog):
         """测试服务器连接"""
-        username = self.server_username_input.text().strip()
-        password = self.server_password_input.text().strip()
-        admin_username = self.server_admin_username_input.text().strip()
-        admin_password = self.server_admin_password_input.text().strip()
-        api_path = self.server_api_input.text().strip()
         server_url = self.server_url_input.text().strip()
-
-        if not username or not password:
-            QMessageBox.warning(dialog, "警告", "请输入用户名和密码")
-            return
 
         self.server_config_status.setText("🔄 正在测试连接...")
         self.server_config_status.setStyleSheet("color: blue;")
@@ -1112,12 +1053,7 @@ class MainWindow(QMainWindow):
         # 创建临时许可证管理器进行测试
         from discord_client import LicenseManager
         test_license_manager = LicenseManager(
-            license_server_url=server_url,
-            client_username=username,
-            client_password=password,
-            admin_username=admin_username if admin_username else None,
-            admin_password=admin_password if admin_password else None,
-            api_path=api_path
+            license_server_url=server_url
         )
 
         # 在新线程中测试连接
@@ -1136,27 +1072,7 @@ class MainWindow(QMainWindow):
 
     def save_server_config(self, dialog):
         """保存服务器配置"""
-        username = self.server_username_input.text().strip()
-        password = self.server_password_input.text().strip()
-        admin_username = self.server_admin_username_input.text().strip()
-        admin_password = self.server_admin_password_input.text().strip()
-        api_path = self.server_api_input.text().strip()
-        server_url = self.server_url_input.text().strip()
-
-        if not username or not password:
-            QMessageBox.warning(dialog, "警告", "请输入用户名和密码")
-            return
-
-        # 更新DiscordManager的配置
-        self.discord_manager.configure_license_auth(username, password, api_path)
-        self.discord_manager.license_manager.license_server_url = server_url.rstrip('/')
-        self.discord_manager.license_manager.admin_username = admin_username if admin_username else None
-        self.discord_manager.license_manager.admin_password = admin_password if admin_password else None
-
-        # 保存到配置
-        self.save_config()
-
-        QMessageBox.information(dialog, "成功", "服务器配置已保存")
+        QMessageBox.information(dialog, "提示", "服务器地址已固定，无需保存配置。")
         dialog.accept()
 
     def create_posting_tab(self):
@@ -1524,33 +1440,21 @@ class MainWindow(QMainWindow):
         self.discord_manager.posting_tasks = posting_tasks
         self.discord_manager.comment_tasks = comment_tasks
 
-        # 配置许可证认证信息
-        username = license_config.get("username", "client")
-        password = license_config.get("password", "qq1383766")
-        # 如果配置文件中没有管理员认证信息，使用默认值
-        admin_username = license_config.get("admin_username") or "admin"
-        admin_password = license_config.get("admin_password") or "qq1383766"
-        api_path = license_config.get("api_path", "/api/v1")
-        server_url = license_config.get("server_url", "https://license.thy1cc.top")
+        # 许可证配置（固定服务器，不使用认证信息）
+        license_key = license_config.get("license_key", "").strip()
+        if license_key:
+            self.license_key = license_key
 
-        # 配置许可证管理器
-        self.discord_manager.configure_license_auth(username, password, api_path)
-        self.discord_manager.license_manager.license_server_url = server_url
-        self.discord_manager.license_manager.admin_username = admin_username
-        self.discord_manager.license_manager.admin_password = admin_password
+        saved_hwid = license_config.get("hwid")
+        is_activated = license_config.get("is_activated", False)
+        license_info = license_config.get("license_info")
+        current_hwid = self.discord_manager.license_manager.machine_fingerprint
 
-        print(f"许可证配置 - 客户端: {username}, 管理员: {admin_username}")
-        print(f"许可证管理器 - 管理员认证: {admin_username} (密码已设置)")
-
-        # 如果有保存的许可证密钥，尝试验证
-        if license_config.get("license_key"):
-            self.license_key = license_config["license_key"]
-            # 自动验证许可证（在后台进行）
-            try:
-                # 这里可以添加自动验证逻辑，但暂时保持现有行为
-                pass
-            except Exception as e:
-                self.add_log(f"自动验证许可证失败: {e}", "warning")
+        if license_key and is_activated and saved_hwid == current_hwid:
+            self.discord_manager.license_manager.license_key = license_key
+            self.discord_manager.license_manager.is_activated = True
+            if isinstance(license_info, dict):
+                self.discord_manager.license_manager.license_info = license_info
 
         # 加载轮换设置
         if rotation_config:
@@ -1631,14 +1535,13 @@ class MainWindow(QMainWindow):
         if not current_license_key and hasattr(self, 'license_key_input'):
             current_license_key = self.license_key_input.text().strip()
 
+        license_info = self.discord_manager.license_manager.license_info
         license_config = {
-            "username": self.discord_manager.license_client_username,
-            "password": self.discord_manager.license_client_password,
-            "admin_username": getattr(self.discord_manager.license_manager, 'admin_username', None) or "admin",
-            "admin_password": getattr(self.discord_manager.license_manager, 'admin_password', None) or "qq1383766",
             "license_key": current_license_key,
-            "server_url": getattr(self.discord_manager.license_manager, 'license_server_url', 'https://license.thy1cc.top'),
-            "api_path": getattr(self.discord_manager.license_manager, 'api_path', '/api/v1')
+            "hwid": self.discord_manager.license_manager.machine_fingerprint
+            if self.discord_manager.license_manager.is_activated else None,
+            "is_activated": self.discord_manager.license_manager.is_activated,
+            "license_info": license_info if isinstance(license_info, dict) else None
         }
 
         # 轮换配置
@@ -2619,24 +2522,34 @@ class MainWindow(QMainWindow):
         """更新许可证状态显示"""
         if self.discord_manager.license_manager.is_license_valid():
             license_info = self.discord_manager.license_manager.get_license_info()
-            if license_info:
-                # 只显示激活日期（到期时间）
-                expiry = license_info.get('expiry', '未知')
-                if expiry and expiry != 'Unknown':
-                    self.license_status_label.setText(f"激活至: {expiry}")
-                    self.license_status_label.setStyleSheet("color: green; font-weight: bold;")
-                else:
-                    self.license_status_label.setText("激活状态: 有效")
-                    self.license_status_label.setStyleSheet("color: green; font-weight: bold;")
-            else:
-                self.license_status_label.setText("状态异常")
-                self.license_status_label.setStyleSheet("color: red; font-weight: bold;")
+            status_text = None
+            if isinstance(license_info, dict):
+                days = license_info.get("days")
+                expiry = license_info.get("expiry")
+                if isinstance(days, int):
+                    if days == -1:
+                        status_text = "有效期: 永久"
+                    else:
+                        status_text = f"有效期: {days}天"
+                elif expiry and expiry not in ("Unknown", "未知"):
+                    status_text = f"激活至: {expiry}"
+
+            if not status_text:
+                status_text = "激活状态: 有效"
+
+            self.license_status_label.setText(status_text)
+            self.license_status_label.setStyleSheet("color: green; font-weight: bold;")
         else:
             self.license_status_label.setText("未激活")
             self.license_status_label.setStyleSheet("color: red; font-weight: bold;")
 
     def check_license(self):
         """检查许可证"""
+        # 已通过本地验证则不再请求服务器
+        if self.discord_manager.license_manager.is_license_valid():
+            self.update_license_status()
+            return
+
         # 从配置中读取许可证密钥
         license_config = self.config_manager.load_config()[2]  # 获取许可证配置
         license_key = license_config.get("license_key", "").strip()
@@ -2647,7 +2560,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # 尝试验证配置中的许可证密钥
+            # 尝试激活/验证配置中的许可证密钥
             import asyncio
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -2657,76 +2570,17 @@ class MainWindow(QMainWindow):
             loop.close()
 
             if success:
-                # 检查是否已经激活（不是PENDING状态）
-                if "未激活" in message:
-                    # 许可证未激活，强制要求激活
-                    self.add_log("⚠️ 许可证未激活，需要先激活才能使用软件", "warning")
-                    reply = QMessageBox.question(
-                        self, "许可证未激活",
-                        "您的许可证有效但未激活。\n\n"
-                        "要使用此软件，您需要先激活许可证。\n"
-                        "激活将把许可证绑定到当前机器。\n\n"
-                        "是否现在激活？",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                    )
-
-                    if reply == QMessageBox.StandardButton.Yes:
-                        # 尝试激活许可证
-                        self.add_log("🔄 正在激活许可证...", "info")
-                        try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            activate_success, activate_message = loop.run_until_complete(
-                                self.discord_manager.license_manager.activate_license(license_key)
-                            )
-                            loop.close()
-
-                            if activate_success:
-                                self.add_log("✅ 许可证激活成功！", "success")
-                                QMessageBox.information(self, "成功", "许可证激活成功！\n现在您可以使用软件了。")
-
-                                # 重新验证许可证状态，确保LicenseManager更新了激活状态
-                                try:
-                                    loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(loop)
-                                    final_check, final_message = loop.run_until_complete(
-                                        self.discord_manager.license_manager.validate_license(license_key)
-                                    )
-                                    loop.close()
-                                    self.add_log(f"最终状态检查: {final_message}", "info")
-                                except Exception as e:
-                                    self.add_log(f"状态检查失败: {e}", "warning")
-
-                                self.update_license_status()
-                                return
-                            else:
-                                self.add_log(f"❌ 许可证激活失败: {activate_message}", "error")
-                                QMessageBox.critical(self, "激活失败",
-                                                   f"许可证激活失败：{activate_message}\n\n"
-                                                   "请检查：\n"
-                                                   "1. 网络连接是否正常\n"
-                                                   "2. 是否配置了正确的服务器认证信息\n"
-                                                   "3. 联系管理员获取帮助\n\n"
-                                                   "软件将退出。")
-                                sys.exit(1)
-                        except Exception as e:
-                            self.add_log(f"❌ 激活过程出错: {e}", "error")
-                            QMessageBox.critical(self, "错误", f"激活过程出错：{e}\n\n软件将退出。")
-                            sys.exit(1)
-                    else:
-                        # 用户选择不激活
-                        self.add_log("❌ 用户取消激活，软件退出", "warning")
-                        QMessageBox.information(self, "已取消", "激活已取消。\n\n软件将退出。")
-                        sys.exit(0)
-                else:
-                    # 许可证已激活且有效
-                    self.update_license_status()
-                    return
+                self.license_key = license_key
+                self.update_license_status()
+                self.save_config()
+                return
             else:
                 # 许可证无效或其他错误
                 self.add_log(f"❌ 许可证验证失败: {message}", "error")
+                QMessageBox.warning(self, "验证失败", message)
         except Exception as e:
             self.add_log(f"❌ 许可证检查出错: {e}", "error")
+            QMessageBox.warning(self, "错误", f"许可证检查出错：{e}")
 
         # 许可证无效或其他问题，显示输入对话框
         self.show_license_input_dialog()
@@ -2833,10 +2687,12 @@ class MainWindow(QMainWindow):
             self.license_status_display.setStyleSheet("color: red;")
 
             # 提供更友好的错误提示
-            if "403" in message or "认证失败" in message:
-                friendly_message = f"{message}\n\n请检查：\n1. 许可证密钥是否正确\n2. 网络连接是否正常\n3. 如有疑问请联系客服"
+            if "已被其他设备激活" in message:
+                friendly_message = f"{message}\n\n请联系管理员获取新的许可证。"
+            elif "超时" in message or "网络" in message:
+                friendly_message = f"{message}\n\n请检查网络连接后重试。"
             else:
-                friendly_message = message
+                friendly_message = f"{message}\n\n请确认许可证密钥是否正确。"
 
             QMessageBox.warning(dialog, "验证失败", friendly_message)
 
