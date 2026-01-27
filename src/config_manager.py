@@ -78,7 +78,9 @@ class ConfigManager:
                     "image_path": task.image_path,
                     "delay_seconds": task.delay_seconds,
                     "is_active": task.is_active,
-                    "created_at": task.created_at
+                    "created_at": task.created_at,
+                    "tags": task.tags,
+                    "next_run_at": task.next_run_at
                 }
                 for task in posting_tasks
             ]
@@ -93,7 +95,8 @@ class ConfigManager:
                     "image_path": task.image_path,
                     "delay_seconds": task.delay_seconds,
                     "is_active": task.is_active,
-                    "created_at": task.created_at
+                    "created_at": task.created_at,
+                    "next_run_at": task.next_run_at
                 }
                 for task in comment_tasks
             ]
@@ -154,6 +157,15 @@ class ConfigManager:
             # 加载发帖任务
             posting_tasks = []
             for task_data in config_data.get("posting_tasks", []):
+                tags = task_data.get("tags", [])
+                if isinstance(tags, str):
+                    separators = [';', ',']
+                    for sep in separators:
+                        if sep in tags:
+                            tags = [t.strip() for t in tags.split(sep) if t.strip()]
+                            break
+                    else:
+                        tags = [tags.strip()] if tags.strip() else []
                 task = PostingTask(
                     id=task_data["id"],
                     content=task_data["content"],
@@ -162,7 +174,9 @@ class ConfigManager:
                     image_path=task_data.get("image_path"),
                     delay_seconds=task_data.get("delay_seconds", 0),
                     is_active=task_data.get("is_active", True),
-                    created_at=task_data.get("created_at")
+                    created_at=task_data.get("created_at"),
+                    tags=tags,
+                    next_run_at=task_data.get("next_run_at")
                 )
                 posting_tasks.append(task)
 
@@ -176,7 +190,8 @@ class ConfigManager:
                     image_path=task_data.get("image_path"),
                     delay_seconds=task_data.get("delay_seconds", 0),
                     is_active=task_data.get("is_active", True),
-                    created_at=task_data.get("created_at")
+                    created_at=task_data.get("created_at"),
+                    next_run_at=task_data.get("next_run_at")
                 )
                 comment_tasks.append(task)
 

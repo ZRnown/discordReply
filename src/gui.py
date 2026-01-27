@@ -1,5 +1,6 @@
 import sys
 import asyncio
+import time
 from typing import List, Optional
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1144,6 +1145,27 @@ class MainWindow(QMainWindow):
         posting_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(posting_interval_layout)
 
+        # 循环发送设置
+        repeat_layout = QHBoxLayout()
+        self.posting_repeat_checkbox = QCheckBox("循环发送任务")
+        self.posting_repeat_checkbox.setToolTip("启用后，发帖任务会按间隔循环执行")
+        self.posting_repeat_checkbox.setChecked(self.discord_manager.posting_repeat_enabled)
+        self.posting_repeat_checkbox.stateChanged.connect(self.on_posting_repeat_enabled_changed)
+        repeat_layout.addWidget(self.posting_repeat_checkbox)
+        repeat_layout.addStretch()
+        rotation_accounts_layout.addLayout(repeat_layout)
+
+        # 默认频道
+        default_channel_layout = QHBoxLayout()
+        default_channel_layout.addWidget(QLabel("默认频道ID:"))
+        self.posting_default_channel_input = QLineEdit()
+        self.posting_default_channel_input.setPlaceholderText("可选，留空则每次手动输入")
+        if self.discord_manager.default_posting_channel_id:
+            self.posting_default_channel_input.setText(str(self.discord_manager.default_posting_channel_id))
+        self.posting_default_channel_input.editingFinished.connect(self.on_default_posting_channel_changed)
+        default_channel_layout.addWidget(self.posting_default_channel_input)
+        rotation_accounts_layout.addLayout(default_channel_layout)
+
         layout.addWidget(rotation_accounts_group)
 
         # 发帖任务列表
@@ -1245,6 +1267,18 @@ class MainWindow(QMainWindow):
         comment_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(comment_interval_layout)
 
+        # 多链接间隔
+        link_interval_layout = QHBoxLayout()
+        link_interval_layout.addWidget(QLabel("多链接间隔(秒):"))
+        self.comment_link_interval_spin = QSpinBox()
+        self.comment_link_interval_spin.setRange(0, 3600)
+        self.comment_link_interval_spin.setValue(self.discord_manager.comment_link_interval)
+        self.comment_link_interval_spin.setSuffix("秒")
+        self.comment_link_interval_spin.editingFinished.connect(self.on_comment_link_interval_changed)
+        link_interval_layout.addWidget(self.comment_link_interval_spin)
+        link_interval_layout.addStretch()
+        rotation_accounts_layout.addLayout(link_interval_layout)
+
         layout.addWidget(rotation_accounts_group)
 
         # 评论任务列表
@@ -1263,6 +1297,10 @@ class MainWindow(QMainWindow):
         add_comment_btn = QPushButton("添加评论任务")
         add_comment_btn.clicked.connect(self.add_comment_task)
         search_layout.addWidget(add_comment_btn)
+
+        clear_comment_btn = QPushButton("一键删除")
+        clear_comment_btn.clicked.connect(self.clear_comment_tasks)
+        search_layout.addWidget(clear_comment_btn)
 
         tasks_layout.addLayout(search_layout)
 
@@ -1448,6 +1486,8 @@ class MainWindow(QMainWindow):
         saved_hwid = license_config.get("hwid")
         is_activated = license_config.get("is_activated", False)
         license_info = license_config.get("license_info")
+        if saved_hwid:
+            self.discord_manager.license_manager.machine_fingerprint = saved_hwid
         current_hwid = self.discord_manager.license_manager.machine_fingerprint
 
         if license_key and is_activated and saved_hwid == current_hwid:
@@ -1466,6 +1506,9 @@ class MainWindow(QMainWindow):
             self.discord_manager.comment_rotation_count = rotation_config.get("comment_rotation_count", 10)
             self.discord_manager.posting_interval = rotation_config.get("posting_interval", 30)  # 默认30秒
             self.discord_manager.comment_interval = rotation_config.get("comment_interval", 30)  # 默认30秒
+            self.discord_manager.posting_repeat_enabled = rotation_config.get("posting_repeat_enabled", True)
+            self.discord_manager.comment_link_interval = rotation_config.get("comment_link_interval", 5)
+            self.discord_manager.default_posting_channel_id = rotation_config.get("default_posting_channel_id")
 
         self.update_accounts_list()
         self.update_rules_list()
@@ -1478,6 +1521,15 @@ class MainWindow(QMainWindow):
             self.posting_interval_spin.setValue(self.discord_manager.posting_interval)
         if hasattr(self, 'comment_interval_spin'):
             self.comment_interval_spin.setValue(self.discord_manager.comment_interval)
+        if hasattr(self, 'posting_repeat_checkbox'):
+            self.posting_repeat_checkbox.setChecked(self.discord_manager.posting_repeat_enabled)
+        if hasattr(self, 'posting_default_channel_input'):
+            if self.discord_manager.default_posting_channel_id:
+                self.posting_default_channel_input.setText(str(self.discord_manager.default_posting_channel_id))
+            else:
+                self.posting_default_channel_input.clear()
+        if hasattr(self, 'comment_link_interval_spin'):
+            self.comment_link_interval_spin.setValue(self.discord_manager.comment_link_interval)
 
         # 更新任务列表显示
         self.update_posting_tasks_list()
@@ -1553,7 +1605,10 @@ class MainWindow(QMainWindow):
             "comment_rotation_enabled": self.discord_manager.comment_rotation_enabled,
             "comment_rotation_count": self.discord_manager.comment_rotation_count,
             "posting_interval": self.discord_manager.posting_interval,
-            "comment_interval": self.discord_manager.comment_interval
+            "comment_interval": self.discord_manager.comment_interval,
+            "posting_repeat_enabled": self.discord_manager.posting_repeat_enabled,
+            "comment_link_interval": self.discord_manager.comment_link_interval,
+            "default_posting_channel_id": self.discord_manager.default_posting_channel_id
         }
 
         self.config_manager.save_config(
@@ -1892,9 +1947,38 @@ class MainWindow(QMainWindow):
             if self.rules_stats_label.text() != rules_text:
                 self.rules_stats_label.setText(rules_text)
 
+            # 刷新任务倒计时
+            self.refresh_task_countdowns()
+
         except Exception as e:
             # 静默处理状态更新错误，避免影响用户体验
             print(f"状态更新错误: {e}")
+
+    def refresh_task_countdowns(self):
+        """刷新发帖/评论任务倒计时显示"""
+        now = time.time()
+
+        for row, task in enumerate(self.discord_manager.posting_tasks):
+            if row >= self.posting_tasks_table.rowCount():
+                break
+            status_text = "激活" if task.is_active else "禁用"
+            if task.is_active and task.next_run_at:
+                remaining = max(0, int(task.next_run_at - now))
+                status_text = f"激活 | 倒计时: {remaining}秒"
+            status_item = self.posting_tasks_table.item(row, 3)
+            if status_item:
+                status_item.setText(status_text)
+
+        for row, task in enumerate(self.discord_manager.comment_tasks):
+            if row >= self.comment_tasks_table.rowCount():
+                break
+            status_text = "激活" if task.is_active else "禁用"
+            if task.is_active and task.next_run_at:
+                remaining = max(0, int(task.next_run_at - now))
+                status_text = f"激活 | 倒计时: {remaining}秒"
+            status_item = self.comment_tasks_table.item(row, 3)
+            if status_item:
+                status_item.setText(status_text)
 
     def show_accounts_context_menu(self, position):
         """显示账号右键菜单"""
@@ -2256,7 +2340,10 @@ class MainWindow(QMainWindow):
                 data['delay_min'],
                 data['delay_max'],
                 data.get('ignore_replies', False),
-                data.get('ignore_mentions', False)
+                data.get('ignore_mentions', False),
+                data.get('case_sensitive', False),
+                data.get('image_path'),
+                data.get('account_ids')
             )
 
             # 设置激活状态
@@ -2290,7 +2377,9 @@ class MainWindow(QMainWindow):
                     is_active=data['is_active'],
                     ignore_replies=data.get('ignore_replies', False),
                     ignore_mentions=data.get('ignore_mentions', False),
-                    case_sensitive=data.get('case_sensitive', False)
+                    case_sensitive=data.get('case_sensitive', False),
+                    image_path=data.get('image_path'),
+                    account_ids=data.get('account_ids')
                 )
 
                 self.update_rules_list()
@@ -2458,6 +2547,17 @@ class MainWindow(QMainWindow):
         """清空日志"""
         self.log_text.clear()
         self.add_log("日志已清空", "info")
+
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        try:
+            self.save_config()
+        except Exception as e:
+            print(f"保存配置失败: {e}")
+
+        if self.worker_thread and self.worker_thread.running:
+            self.worker_thread.running = False
+        event.accept()
 
     def toggle_auto_scroll(self, state):
         """切换自动滚动"""
@@ -2801,13 +2901,21 @@ class MainWindow(QMainWindow):
         """添加发帖任务"""
         dialog = PostingTaskDialog(self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            data = dialog.get_data()
+            try:
+                data = dialog.get_data()
+            except ValueError:
+                QMessageBox.warning(self, "错误", "频道ID格式错误，请输入数字")
+                return
+            if data['channel_id'] is None and not self.discord_manager.default_posting_channel_id:
+                QMessageBox.warning(self, "错误", "请输入频道ID或先设置默认频道")
+                return
             task_id = self.discord_manager.add_posting_task(
                 data['content'],
                 data['channel_id'],
                 data['image_path'],
                 0,  # 使用全局发帖间隔，不再有单独延时
-                data['title']
+                data['title'],
+                data.get('tags')
             )
             self.update_posting_tasks_list()
             self.add_log(f"发帖任务已添加: {task_id}", "info")
@@ -2874,6 +2982,25 @@ class MainWindow(QMainWindow):
             self.save_config()
             self.add_log(f"评论任务已删除: {task_id}", "info")
 
+    def clear_comment_tasks(self):
+        """一键删除所有评论任务"""
+        if not self.discord_manager.comment_tasks:
+            QMessageBox.information(self, "提示", "当前没有评论任务")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除所有评论任务吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.discord_manager.comment_tasks.clear()
+            self.update_comment_tasks_list()
+            self.save_config()
+            self.add_log("所有评论任务已删除", "info")
+
     def edit_posting_task_by_id(self, row):
         """根据表格行号编辑发帖任务（通过任务ID）"""
         # 从表格项中获取任务ID
@@ -2903,10 +3030,17 @@ class MainWindow(QMainWindow):
             try:
                 data = dialog.get_data()
                 # 更新任务数据
-                task.channel_id = data['channel_id']
+                channel_id = data['channel_id']
+                if channel_id is None:
+                    channel_id = self.discord_manager.default_posting_channel_id or task.channel_id
+                    if channel_id is None:
+                        QMessageBox.warning(self, "错误", "请输入频道ID或先设置默认频道")
+                        return
+                task.channel_id = channel_id
                 task.title = data['title']
                 task.content = data['content']
                 task.image_path = data['image_path']
+                task.tags = data.get('tags') or []
                 task.delay_seconds = 0  # 保持为0，使用全局间隔
 
                 # 更新UI
@@ -2968,7 +3102,11 @@ class MainWindow(QMainWindow):
             self.posting_tasks_table.setItem(row, 0, content_item)
             self.posting_tasks_table.setItem(row, 1, QTableWidgetItem(str(task.channel_id)))
             self.posting_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
-            self.posting_tasks_table.setItem(row, 3, QTableWidgetItem("激活" if task.is_active else "禁用"))
+            status_text = "激活" if task.is_active else "禁用"
+            if task.is_active and task.next_run_at:
+                remaining = max(0, int(task.next_run_at - time.time()))
+                status_text = f"激活 | 倒计时: {remaining}秒"
+            self.posting_tasks_table.setItem(row, 3, QTableWidgetItem(status_text))
 
             # 创建操作按钮
             action_widget = QWidget()
@@ -3073,10 +3211,47 @@ class MainWindow(QMainWindow):
         self.discord_manager.posting_interval = value
         self.save_config()
 
+    def on_posting_repeat_enabled_changed(self, state):
+        """发帖循环发送开关"""
+        enabled = state == Qt.CheckState.Checked
+        self.discord_manager.posting_repeat_enabled = enabled
+        self.save_config()
+        if enabled:
+            self.add_log("发帖任务将循环发送", "info")
+        else:
+            self.add_log("发帖任务将仅执行一次", "info")
+
+    def on_default_posting_channel_changed(self):
+        """默认发帖频道改变"""
+        value = self.posting_default_channel_input.text().strip()
+        if not value:
+            self.discord_manager.default_posting_channel_id = None
+            self.save_config()
+            return
+
+        try:
+            channel_id = int(value)
+        except ValueError:
+            QMessageBox.warning(self, "错误", "默认频道ID格式无效，请输入数字")
+            if self.discord_manager.default_posting_channel_id:
+                self.posting_default_channel_input.setText(str(self.discord_manager.default_posting_channel_id))
+            else:
+                self.posting_default_channel_input.clear()
+            return
+
+        self.discord_manager.default_posting_channel_id = channel_id
+        self.save_config()
+
     def on_comment_interval_changed(self):
         """评论间隔改变"""
         value = self.comment_interval_spin.value()
         self.discord_manager.comment_interval = value
+        self.save_config()
+
+    def on_comment_link_interval_changed(self):
+        """评论多链接间隔改变"""
+        value = self.comment_link_interval_spin.value()
+        self.discord_manager.comment_link_interval = value
         self.save_config()
 
     def update_comment_tasks_list(self):
@@ -3088,7 +3263,11 @@ class MainWindow(QMainWindow):
             self.comment_tasks_table.setItem(row, 0, content_item)
             self.comment_tasks_table.setItem(row, 1, QTableWidgetItem(task.message_link))
             self.comment_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
-            self.comment_tasks_table.setItem(row, 3, QTableWidgetItem("激活" if task.is_active else "禁用"))
+            status_text = "激活" if task.is_active else "禁用"
+            if task.is_active and task.next_run_at:
+                remaining = max(0, int(task.next_run_at - time.time()))
+                status_text = f"激活 | 倒计时: {remaining}秒"
+            self.comment_tasks_table.setItem(row, 3, QTableWidgetItem(status_text))
 
             # 创建操作按钮
             action_widget = QWidget()
@@ -3128,6 +3307,8 @@ class PostingTaskDialog(QDialog):
         channel_layout.addWidget(QLabel("频道ID:"))
         self.channel_input = QLineEdit()
         self.channel_input.setPlaceholderText("输入Discord频道ID")
+        if not task and hasattr(parent, 'discord_manager') and parent.discord_manager.default_posting_channel_id:
+            self.channel_input.setText(str(parent.discord_manager.default_posting_channel_id))
         channel_layout.addWidget(self.channel_input)
         layout.addLayout(channel_layout)
 
@@ -3163,6 +3344,14 @@ class PostingTaskDialog(QDialog):
         image_layout.addWidget(clear_button)
 
         layout.addLayout(image_layout)
+
+        # 论坛标签
+        tags_layout = QHBoxLayout()
+        tags_layout.addWidget(QLabel("标签 (可选):"))
+        self.tags_input = QLineEdit()
+        self.tags_input.setPlaceholderText("标签名称或ID，多个用逗号或分号分隔")
+        tags_layout.addWidget(self.tags_input)
+        layout.addLayout(tags_layout)
 
         # 注意：延时设置已移除，使用全局发帖间隔
 
@@ -3205,12 +3394,25 @@ class PostingTaskDialog(QDialog):
 
     def get_data(self):
         """获取对话框数据"""
+        channel_text = self.channel_input.text().strip()
+        channel_id = int(channel_text) if channel_text else None
+        tags_text = self.tags_input.text().strip()
+        tags = []
+        if tags_text:
+            separators = [';', ',']
+            for sep in separators:
+                if sep in tags_text:
+                    tags = [t.strip() for t in tags_text.split(sep) if t.strip()]
+                    break
+            else:
+                tags = [tags_text]
         return {
-            'channel_id': int(self.channel_input.text().strip()),
+            'channel_id': channel_id,
             'title': self.title_input.text().strip() or None,
             'content': self.content_input.toPlainText().strip(),
             'image_path': self.image_input.text().strip() or None,
-            'delay_seconds': 0  # 使用全局发帖间隔，不再有单独延时
+            'delay_seconds': 0,  # 使用全局发帖间隔，不再有单独延时
+            'tags': tags
         }
 
     def showEvent(self, event):
@@ -3229,6 +3431,8 @@ class PostingTaskDialog(QDialog):
                 self.content_input.setPlainText(self.task.content)
             if hasattr(self, 'image_input'):
                 self.image_input.setText(self.task.image_path or "")
+            if hasattr(self, 'tags_input'):
+                self.tags_input.setText(", ".join(self.task.tags or []))
             # 不再设置delay_spin，因为已移除
 
 

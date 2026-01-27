@@ -69,6 +69,9 @@ def license_check():
         is_activated = license_config.get("is_activated", False)
         license_info = license_config.get("license_info")
 
+        if saved_hwid:
+            license_manager.machine_fingerprint = saved_hwid
+
         if license_key and is_activated and saved_hwid == license_manager.machine_fingerprint:
             license_manager.license_key = license_key
             license_manager.is_activated = True

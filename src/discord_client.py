@@ -51,12 +51,18 @@ class PostingTask:
     delay_seconds: int = 0  # 延迟发帖时间（秒）
     is_active: bool = True  # 是否激活
     created_at: Optional[float] = None  # 创建时间
+    tags: Optional[List[str]] = None  # 论坛标签（可选，名称或ID）
+    next_run_at: Optional[float] = None  # 下次执行时间戳
 
     def __post_init__(self):
         # 只有当created_at为None时才设置当前时间
         # 这样可以保留从配置加载的原始创建时间
         if self.created_at is None:
             self.created_at = time.time()
+        if self.tags is None:
+            self.tags = []
+        if self.next_run_at is None:
+            self.next_run_at = self.created_at + self.delay_seconds
 
 
 @dataclass
@@ -69,12 +75,15 @@ class CommentTask:
     delay_seconds: int = 0  # 延迟评论时间（秒）
     is_active: bool = True  # 是否激活
     created_at: Optional[float] = None  # 创建时间
+    next_run_at: Optional[float] = None  # 下次执行时间戳
 
     def __post_init__(self):
         # 只有当created_at为None时才设置当前时间
         # 这样可以保留从配置加载的原始创建时间
         if self.created_at is None:
             self.created_at = time.time()
+        if self.next_run_at is None:
+            self.next_run_at = self.created_at + self.delay_seconds
 
 
 @dataclass
@@ -538,6 +547,9 @@ class DiscordManager:
         self.comment_tasks: List[CommentTask] = []  # 评论任务列表
         self.posting_interval: int = 30  # 发帖间隔（秒），默认30秒
         self.comment_interval: int = 30  # 评论间隔（秒），默认30秒
+        self.posting_repeat_enabled: bool = True  # 发帖任务是否循环执行
+        self.comment_link_interval: int = 5  # 评论多链接间隔（秒）
+        self.default_posting_channel_id: Optional[int] = None  # 默认发帖频道
         self.current_posting_index: int = 0  # 当前发帖账号索引
         self.current_comment_index: int = 0  # 当前评论账号索引
 
@@ -584,7 +596,8 @@ class DiscordManager:
     def add_rule(self, keywords: List[str], reply: str, match_type: MatchType,
                  target_channels: List[int], delay_min: float = 0.1, delay_max: float = 1.0,
                  ignore_replies: bool = True, ignore_mentions: bool = True,
-                 case_sensitive: bool = False, image_path: Optional[str] = None):
+                 case_sensitive: bool = False, image_path: Optional[str] = None,
+                 account_ids: Optional[List[str]] = None):
         """添加规则"""
         # 生成唯一的规则ID
         import time
@@ -601,7 +614,8 @@ class DiscordManager:
             ignore_replies=ignore_replies,
             ignore_mentions=ignore_mentions,
             case_sensitive=case_sensitive,
-            image_path=image_path
+            image_path=image_path,
+            account_ids=account_ids
         )
         self.rules.append(rule)
 
@@ -820,10 +834,17 @@ class DiscordManager:
 
     # ============ 发帖和评论功能 ============
 
-    def add_posting_task(self, content: str, channel_id: int, image_path: Optional[str] = None, delay_seconds: int = 0, title: Optional[str] = None):
+    def add_posting_task(self, content: str, channel_id: Optional[int],
+                         image_path: Optional[str] = None, delay_seconds: int = 0,
+                         title: Optional[str] = None, tags: Optional[List[str]] = None):
         """添加发帖任务"""
         import time
         task_id = f"post_{int(time.time() * 1000)}_{len(self.posting_tasks)}"
+
+        if not channel_id and self.default_posting_channel_id:
+            channel_id = self.default_posting_channel_id
+
+        initial_delay = delay_seconds if delay_seconds > 0 else max(0, self.posting_interval)
 
         task = PostingTask(
             id=task_id,
@@ -831,7 +852,9 @@ class DiscordManager:
             content=content,
             image_path=image_path,
             channel_id=channel_id,
-            delay_seconds=delay_seconds
+            delay_seconds=initial_delay,
+            tags=tags,
+            next_run_at=time.time() + initial_delay if initial_delay > 0 else time.time()
         )
         self.posting_tasks.append(task)
 
@@ -841,8 +864,10 @@ class DiscordManager:
                 self.log_callback(f"  标题: '{title}'")
             self.log_callback(f"  内容: '{content[:50]}{'...' if len(content) > 50 else ''}'")
             self.log_callback(f"  频道ID: {channel_id}")
-            self.log_callback(f"  延迟: {delay_seconds}秒")
+            self.log_callback(f"  延迟: {initial_delay}秒")
             self.log_callback(f"  图片: {image_path if image_path else '无'}")
+            if tags:
+                self.log_callback(f"  标签: {', '.join(tags)}")
 
         return task_id
 
@@ -873,6 +898,8 @@ class DiscordManager:
 
         # 验证频道ID格式
         try:
+            if task.channel_id is None:
+                raise ValueError("频道ID为空")
             channel_id_int = int(task.channel_id)
             if self.log_callback:
                 self.log_callback(f"✅ 频道ID格式正确: {channel_id_int}")
@@ -981,6 +1008,26 @@ class DiscordManager:
                     if image_paths:
                         thread_kwargs['files'] = [discord.File(path) for path in image_paths]
 
+                    # 论坛标签
+                    if task.tags and channel.available_tags:
+                        applied_tags = []
+                        for tag_value in task.tags:
+                            tag_text = str(tag_value).strip()
+                            if not tag_text:
+                                continue
+                            matched_tag = None
+                            if tag_text.isdigit():
+                                matched_tag = next((t for t in channel.available_tags if str(t.id) == tag_text), None)
+                            else:
+                                matched_tag = next((t for t in channel.available_tags if t.name.lower() == tag_text.lower()), None)
+                            if matched_tag:
+                                applied_tags.append(matched_tag)
+                            elif self.log_callback:
+                                self.log_callback(f"⚠️ 找不到标签: {tag_text}")
+
+                        if applied_tags:
+                            thread_kwargs['applied_tags'] = applied_tags
+
                     # 创建论坛帖子
                     thread = await channel.create_thread(**thread_kwargs)
                     if self.log_callback:
@@ -989,17 +1036,20 @@ class DiscordManager:
                         self.log_callback(f"✅ [{account.alias}] 论坛发帖成功: 创建帖子 '{thread_name}'")
                     # 增加发帖计数
                     self.posting_count_since_rotation += 1
-                    # 移除已完成的任务
-                    self.posting_tasks.remove(task)
                     return True
+                except discord.HTTPException as e:
+                    if e.code == 20016:
+                        retry_after = getattr(e, "retry_after", None) or self.posting_interval or 60
+                        task.next_run_at = time.time() + max(1, retry_after)
+                        if self.log_callback:
+                            self.log_callback(f"⚠️ [{account.alias}] 慢速模式限制，{int(retry_after)}秒后重试")
+                    elif self.log_callback:
+                        self.log_callback(f"❌ [{account.alias}] 论坛发帖失败: HTTP {e.code}")
+                    return False
                 except Exception as e:
                     if self.log_callback:
                         self.log_callback(f"❌ [{account.alias}] 论坛发帖失败: {str(e)}")
                     return False
-
-            # 延迟执行
-            if task.delay_seconds > 0:
-                await asyncio.sleep(task.delay_seconds)
 
             # 构建发送内容
             send_content = task.content
@@ -1024,10 +1074,17 @@ class DiscordManager:
                 rotation_info = f" (轮换计数: {self.posting_count_since_rotation}/{self.posting_rotation_count})" if self.posting_rotation_enabled else ""
                 self.log_callback(f"✅ [{account.alias}] 发帖成功: '{task.content[:50]}...'{rotation_info}")
 
-            # 移除已完成的任务
-            self.posting_tasks.remove(task)
             return True
 
+        except discord.HTTPException as e:
+            if e.code == 20016:
+                retry_after = getattr(e, "retry_after", None) or self.posting_interval or 60
+                task.next_run_at = time.time() + max(1, retry_after)
+                if self.log_callback:
+                    self.log_callback(f"⚠️ [{account.alias}] 慢速模式限制，{int(retry_after)}秒后重试")
+            elif self.log_callback:
+                self.log_callback(f"❌ [{account.alias}] 发帖失败: HTTP {e.code}")
+            return False
         except Exception as e:
             if self.log_callback:
                 self.log_callback(f"❌ [{account.alias}] 发帖失败: {str(e)}")
@@ -1085,7 +1142,9 @@ class DiscordManager:
                 links = [links_input] if links_input else []
 
             success_count = 0
-            for link in links:
+            link_interval = max(0, self.comment_link_interval)
+
+            for index, link in enumerate(links):
                 if link.isdigit():
                     try:
                         channel_id = int(link)
@@ -1148,36 +1207,57 @@ class DiscordManager:
                         image_paths = [task.image_path]
                     image_paths = [path for path in image_paths if os.path.exists(path)]
 
-                if image_paths:
-                    files = [discord.File(path) for path in image_paths]
-                    if task.content.strip():
-                        if message:
-                            await message.reply(task.content, files=files)
+                if self.log_callback:
+                    self.log_callback(f"💬 [{account.alias}] 准备评论: {link}")
+
+                try:
+                    if image_paths:
+                        files = [discord.File(path) for path in image_paths]
+                        if task.content.strip():
+                            if message:
+                                await message.reply(task.content, files=files)
+                            else:
+                                await target_channel.send(task.content, files=files)
                         else:
-                            await target_channel.send(task.content, files=files)
+                            if message:
+                                await message.reply(files=files)
+                            else:
+                                await target_channel.send(files=files)
                     else:
-                        if message:
-                            await message.reply(files=files)
+                        if task.content.strip():
+                            if message:
+                                await message.reply(task.content)
+                            else:
+                                await target_channel.send(task.content)
                         else:
-                            await target_channel.send(files=files)
-                else:
-                    if task.content.strip():
-                        if message:
-                            await message.reply(task.content)
-                        else:
-                            await target_channel.send(task.content)
-                    else:
-                        if message:
-                            await message.reply()
-                        else:
-                            await target_channel.send()
+                            if message:
+                                await message.reply()
+                            else:
+                                await target_channel.send()
+                except discord.HTTPException as e:
+                    if e.code == 20016:
+                        retry_after = getattr(e, "retry_after", None) or self.comment_interval or 60
+                        task.next_run_at = time.time() + max(1, retry_after)
+                        if self.log_callback:
+                            self.log_callback(f"⚠️ [{account.alias}] 慢速模式限制，{int(retry_after)}秒后重试")
+                    elif self.log_callback:
+                        self.log_callback(f"❌ [{account.alias}] 评论失败: HTTP {e.code}")
+                    return False
 
                 success_count += 1
+                if self.log_callback:
+                    self.log_callback(f"✅ [{account.alias}] 评论成功: {link}")
+
+                if link_interval > 0 and index < len(links) - 1:
+                    if self.log_callback:
+                        self.log_callback(f"⏳ 等待 {link_interval} 秒后继续下一条评论")
+                    await asyncio.sleep(link_interval)
 
             if self.log_callback:
                 self.log_callback(f"✅ [{account.alias}] 成功发送 {success_count}/{len(links)} 条评论")
 
             self.comment_count_since_rotation += 1
+            return True
 
         except Exception as e:
             if self.log_callback:
@@ -1225,38 +1305,39 @@ class DiscordManager:
             if not running_clients and self.posting_enabled and self.posting_tasks and self.log_callback:
                 self.log_callback("⚠️ 等待客户端登录超时，将在客户端登录后重试任务执行")
 
+        # 初始化任务的下次执行时间
+        current_time = time.time()
+        for task in self.posting_tasks:
+            base_time = task.next_run_at if task.next_run_at is not None else (task.created_at + task.delay_seconds)
+            if base_time <= current_time and self.posting_interval > 0:
+                task.next_run_at = current_time + self.posting_interval
+            else:
+                task.next_run_at = base_time
+
         while self.posting_enabled:
             try:
-                # 检查是否有待执行的发帖任务
                 current_time = time.time()
+                pending_tasks = [
+                    task for task in self.posting_tasks
+                    if task.is_active and task.next_run_at is not None and current_time >= task.next_run_at
+                ]
 
-                if self.log_callback:
-                    self.log_callback(f"📝 检查任务 - 当前时间: {current_time:.1f}, 任务数量: {len(self.posting_tasks)}, 启用: {self.posting_enabled}, 运行中: {self.is_running}")
-
-                if self.log_callback and self.posting_tasks:
-                    for task in self.posting_tasks:
-                        remaining_time = (task.created_at + task.delay_seconds) - current_time
-                        status = "可执行" if remaining_time <= 0 else f"等待{remaining_time:.1f}秒"
-                        self.log_callback(f"  任务 {task.id}: 活跃={task.is_active}, 创建时间={task.created_at:.1f}, 当前时间={current_time:.1f}, 延迟={task.delay_seconds}, 剩余={remaining_time:.1f}秒, {status}")
-
-                pending_tasks = [task for task in self.posting_tasks
-                               if task.is_active and
-                               current_time >= task.created_at + task.delay_seconds]
-
-                if self.log_callback:
-                    self.log_callback(f"📝 找到 {len(pending_tasks)} 个待执行的任务")
-
-                for task in pending_tasks:
+                for index, task in enumerate(pending_tasks):
                     if self.log_callback:
                         self.log_callback(f"📝 开始执行发帖任务: {task.id}")
                     success = await self.execute_posting_task(task)
-                    if success and self.log_callback:
-                        self.log_callback(f"📝 发帖任务 {task.id} 执行成功")
-                    elif not success and self.log_callback:
+                    if success:
+                        if self.posting_repeat_enabled:
+                            task.next_run_at = time.time() + max(1, self.posting_interval)
+                        else:
+                            if task in self.posting_tasks:
+                                self.posting_tasks.remove(task)
+                        if self.log_callback:
+                            self.log_callback(f"📝 发帖任务 {task.id} 执行成功")
+                    elif self.log_callback:
                         self.log_callback(f"📝 发帖任务 {task.id} 执行失败")
 
-                    # 发帖间隔
-                    if self.posting_interval > 0:
+                    if self.posting_interval > 0 and index < len(pending_tasks) - 1:
                         if self.log_callback:
                             self.log_callback(f"📝 等待发帖间隔: {self.posting_interval}秒")
                         await asyncio.sleep(self.posting_interval)
@@ -1265,7 +1346,19 @@ class DiscordManager:
                 if self.log_callback:
                     self.log_callback(f"❌ 发帖调度器错误: {str(e)}")
 
-            await asyncio.sleep(10)  # 检查间隔
+            # 动态等待到下次任务
+            if not self.posting_tasks:
+                await asyncio.sleep(5)
+                continue
+
+            next_times = [task.next_run_at for task in self.posting_tasks if task.is_active and task.next_run_at]
+            if not next_times:
+                await asyncio.sleep(5)
+                continue
+
+            next_run_at = min(next_times)
+            sleep_seconds = max(1.0, min(5.0, next_run_at - time.time()))
+            await asyncio.sleep(sleep_seconds)
 
     async def start_comment_scheduler(self):
         """启动评论调度器"""
@@ -1294,25 +1387,44 @@ class DiscordManager:
             if not running_clients and self.comment_enabled and self.comment_tasks and self.log_callback:
                 self.log_callback("⚠️ 等待客户端登录超时，将在客户端登录后重试任务执行")
 
+        for task in self.comment_tasks:
+            if task.next_run_at is None:
+                task.next_run_at = task.created_at + task.delay_seconds
+
         while self.comment_enabled:
             try:
-                # 检查是否有待执行的评论任务
                 current_time = time.time()
-                pending_tasks = [task for task in self.comment_tasks
-                               if task.is_active and
-                               current_time >= task.created_at + task.delay_seconds]
+                pending_tasks = [
+                    task for task in self.comment_tasks
+                    if task.is_active and task.next_run_at is not None and current_time >= task.next_run_at
+                ]
 
-                for task in pending_tasks:
-                    await self.execute_comment_task(task)
-                    # 评论间隔
-                    if self.comment_interval > 0:
+                for index, task in enumerate(pending_tasks):
+                    success = await self.execute_comment_task(task)
+                    if success:
+                        task.next_run_at = time.time() + max(1, self.comment_interval)
+                    elif task.next_run_at is None:
+                        task.next_run_at = time.time() + max(1, self.comment_interval)
+
+                    if self.comment_interval > 0 and index < len(pending_tasks) - 1:
                         await asyncio.sleep(self.comment_interval)
 
             except Exception as e:
                 if self.log_callback:
                     self.log_callback(f"❌ 评论调度器错误: {str(e)}")
 
-            await asyncio.sleep(10)  # 检查间隔
+            if not self.comment_tasks:
+                await asyncio.sleep(5)
+                continue
+
+            next_times = [task.next_run_at for task in self.comment_tasks if task.is_active and task.next_run_at]
+            if not next_times:
+                await asyncio.sleep(5)
+                continue
+
+            next_run_at = min(next_times)
+            sleep_seconds = max(1.0, min(5.0, next_run_at - time.time()))
+            await asyncio.sleep(sleep_seconds)
 
 
 
