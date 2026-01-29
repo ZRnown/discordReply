@@ -1,6 +1,9 @@
 import sys
 import asyncio
 import time
+import os
+import json
+import csv
 from typing import List, Optional
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -1140,7 +1143,7 @@ class MainWindow(QMainWindow):
         self.posting_interval_spin.setValue(30)  # 默认30秒
         self.posting_interval_spin.setSuffix("秒")
         self.posting_interval_spin.setEnabled(True)  # 发帖间隔应该始终可用
-        self.posting_interval_spin.editingFinished.connect(self.on_posting_interval_changed)
+        self.posting_interval_spin.valueChanged.connect(self.on_posting_interval_changed)
         posting_interval_layout.addWidget(self.posting_interval_spin)
         posting_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(posting_interval_layout)
@@ -1166,6 +1169,17 @@ class MainWindow(QMainWindow):
         default_channel_layout.addWidget(self.posting_default_channel_input)
         rotation_accounts_layout.addLayout(default_channel_layout)
 
+        # 默认标签
+        default_tags_layout = QHBoxLayout()
+        default_tags_layout.addWidget(QLabel("默认标签:"))
+        self.posting_default_tags_input = QLineEdit()
+        self.posting_default_tags_input.setPlaceholderText("可选，多个用逗号或分号分隔")
+        if self.discord_manager.default_posting_tags:
+            self.posting_default_tags_input.setText(", ".join(self.discord_manager.default_posting_tags))
+        self.posting_default_tags_input.editingFinished.connect(self.on_default_posting_tags_changed)
+        default_tags_layout.addWidget(self.posting_default_tags_input)
+        rotation_accounts_layout.addLayout(default_tags_layout)
+
         layout.addWidget(rotation_accounts_group)
 
         # 发帖任务列表
@@ -1184,6 +1198,14 @@ class MainWindow(QMainWindow):
         add_posting_btn = QPushButton("添加发帖任务")
         add_posting_btn.clicked.connect(self.add_posting_task)
         search_layout.addWidget(add_posting_btn)
+
+        import_posting_btn = QPushButton("自动读取")
+        import_posting_btn.clicked.connect(self.import_posting_materials)
+        search_layout.addWidget(import_posting_btn)
+
+        clear_posting_btn = QPushButton("一键删除")
+        clear_posting_btn.clicked.connect(self.clear_posting_tasks)
+        search_layout.addWidget(clear_posting_btn)
 
         tasks_layout.addLayout(search_layout)
 
@@ -1262,10 +1284,20 @@ class MainWindow(QMainWindow):
         self.comment_interval_spin.setValue(30)  # 默认30秒
         self.comment_interval_spin.setSuffix("秒")
         self.comment_interval_spin.setEnabled(True)  # 评论间隔应该始终可用
-        self.comment_interval_spin.editingFinished.connect(self.on_comment_interval_changed)
+        self.comment_interval_spin.valueChanged.connect(self.on_comment_interval_changed)
         comment_interval_layout.addWidget(self.comment_interval_spin)
         comment_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(comment_interval_layout)
+
+        # 循环评论设置
+        comment_repeat_layout = QHBoxLayout()
+        self.comment_repeat_checkbox = QCheckBox("循环评论任务")
+        self.comment_repeat_checkbox.setToolTip("启用后，评论任务会按间隔循环执行")
+        self.comment_repeat_checkbox.setChecked(self.discord_manager.comment_repeat_enabled)
+        self.comment_repeat_checkbox.stateChanged.connect(self.on_comment_repeat_enabled_changed)
+        comment_repeat_layout.addWidget(self.comment_repeat_checkbox)
+        comment_repeat_layout.addStretch()
+        rotation_accounts_layout.addLayout(comment_repeat_layout)
 
         # 多链接间隔
         link_interval_layout = QHBoxLayout()
@@ -1274,7 +1306,7 @@ class MainWindow(QMainWindow):
         self.comment_link_interval_spin.setRange(0, 3600)
         self.comment_link_interval_spin.setValue(self.discord_manager.comment_link_interval)
         self.comment_link_interval_spin.setSuffix("秒")
-        self.comment_link_interval_spin.editingFinished.connect(self.on_comment_link_interval_changed)
+        self.comment_link_interval_spin.valueChanged.connect(self.on_comment_link_interval_changed)
         link_interval_layout.addWidget(self.comment_link_interval_spin)
         link_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(link_interval_layout)
@@ -1475,6 +1507,10 @@ class MainWindow(QMainWindow):
         accounts, rules, license_config, rotation_config, posting_tasks, comment_tasks = self.config_manager.load_config()
         self.discord_manager.accounts = accounts
         self.discord_manager.rules = rules
+        for task in posting_tasks:
+            task.next_run_at = None
+        for task in comment_tasks:
+            task.next_run_at = None
         self.discord_manager.posting_tasks = posting_tasks
         self.discord_manager.comment_tasks = comment_tasks
 
@@ -1506,9 +1542,14 @@ class MainWindow(QMainWindow):
             self.discord_manager.comment_rotation_count = rotation_config.get("comment_rotation_count", 10)
             self.discord_manager.posting_interval = rotation_config.get("posting_interval", 30)  # 默认30秒
             self.discord_manager.comment_interval = rotation_config.get("comment_interval", 30)  # 默认30秒
-            self.discord_manager.posting_repeat_enabled = rotation_config.get("posting_repeat_enabled", True)
+            self.discord_manager.posting_repeat_enabled = rotation_config.get("posting_repeat_enabled", False)
+            self.discord_manager.comment_repeat_enabled = rotation_config.get("comment_repeat_enabled", False)
             self.discord_manager.comment_link_interval = rotation_config.get("comment_link_interval", 5)
             self.discord_manager.default_posting_channel_id = rotation_config.get("default_posting_channel_id")
+            default_tags = rotation_config.get("default_posting_tags", [])
+            if isinstance(default_tags, str):
+                default_tags = [t.strip() for t in default_tags.replace("\n", ",").split(",") if t.strip()]
+            self.discord_manager.default_posting_tags = default_tags
 
         self.update_accounts_list()
         self.update_rules_list()
@@ -1523,11 +1564,18 @@ class MainWindow(QMainWindow):
             self.comment_interval_spin.setValue(self.discord_manager.comment_interval)
         if hasattr(self, 'posting_repeat_checkbox'):
             self.posting_repeat_checkbox.setChecked(self.discord_manager.posting_repeat_enabled)
+        if hasattr(self, 'comment_repeat_checkbox'):
+            self.comment_repeat_checkbox.setChecked(self.discord_manager.comment_repeat_enabled)
         if hasattr(self, 'posting_default_channel_input'):
             if self.discord_manager.default_posting_channel_id:
                 self.posting_default_channel_input.setText(str(self.discord_manager.default_posting_channel_id))
             else:
                 self.posting_default_channel_input.clear()
+        if hasattr(self, 'posting_default_tags_input'):
+            if self.discord_manager.default_posting_tags:
+                self.posting_default_tags_input.setText(", ".join(self.discord_manager.default_posting_tags))
+            else:
+                self.posting_default_tags_input.clear()
         if hasattr(self, 'comment_link_interval_spin'):
             self.comment_link_interval_spin.setValue(self.discord_manager.comment_link_interval)
 
@@ -1607,8 +1655,10 @@ class MainWindow(QMainWindow):
             "posting_interval": self.discord_manager.posting_interval,
             "comment_interval": self.discord_manager.comment_interval,
             "posting_repeat_enabled": self.discord_manager.posting_repeat_enabled,
+            "comment_repeat_enabled": self.discord_manager.comment_repeat_enabled,
             "comment_link_interval": self.discord_manager.comment_link_interval,
-            "default_posting_channel_id": self.discord_manager.default_posting_channel_id
+            "default_posting_channel_id": self.discord_manager.default_posting_channel_id,
+            "default_posting_tags": self.discord_manager.default_posting_tags
         }
 
         self.config_manager.save_config(
@@ -1962,9 +2012,12 @@ class MainWindow(QMainWindow):
             if row >= self.posting_tasks_table.rowCount():
                 break
             status_text = "激活" if task.is_active else "禁用"
-            if task.is_active and task.next_run_at:
-                remaining = max(0, int(task.next_run_at - now))
-                status_text = f"激活 | 倒计时: {remaining}秒"
+            if task.is_active:
+                if task.next_run_at is not None:
+                    remaining = max(0, int(task.next_run_at - now))
+                    status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
+                else:
+                    status_text = "激活 | 待发送"
             status_item = self.posting_tasks_table.item(row, 3)
             if status_item:
                 status_item.setText(status_text)
@@ -1973,9 +2026,12 @@ class MainWindow(QMainWindow):
             if row >= self.comment_tasks_table.rowCount():
                 break
             status_text = "激活" if task.is_active else "禁用"
-            if task.is_active and task.next_run_at:
-                remaining = max(0, int(task.next_run_at - now))
-                status_text = f"激活 | 倒计时: {remaining}秒"
+            if task.is_active:
+                if task.next_run_at is not None:
+                    remaining = max(0, int(task.next_run_at - now))
+                    status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
+                else:
+                    status_text = "激活 | 待发送"
             status_item = self.comment_tasks_table.item(row, 3)
             if status_item:
                 status_item.setText(status_text)
@@ -2826,6 +2882,10 @@ class MainWindow(QMainWindow):
         self.save_config()
 
         if is_checked:
+            for task in self.discord_manager.posting_tasks:
+                if task.is_active:
+                    task.next_run_at = None
+            self.discord_manager.posting_task_cursor = 0
             self.posting_toggle_button.setText("📄 自动发帖: 开启")
             self.add_log("自动发帖已启用", "info")
             # 如果机器人正在运行，启动发帖调度器
@@ -2846,6 +2906,10 @@ class MainWindow(QMainWindow):
         self.save_config()
 
         if is_checked:
+            for task in self.discord_manager.comment_tasks:
+                if task.is_active:
+                    task.next_run_at = None
+            self.discord_manager.comment_task_cursor = 0
             self.comment_toggle_button.setText("💬 自动评论: 开启")
             self.add_log("自动评论已启用", "info")
             # 如果机器人正在运行，启动评论调度器
@@ -2920,6 +2984,208 @@ class MainWindow(QMainWindow):
             self.update_posting_tasks_list()
             self.add_log(f"发帖任务已添加: {task_id}", "info")
 
+    def import_posting_materials(self):
+        """自动读取发帖素材"""
+        folder = QFileDialog.getExistingDirectory(self, "选择素材文件夹")
+        if not folder:
+            return
+
+        def parse_tags(value):
+            if not value:
+                return []
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+            text = str(value).strip()
+            separators = [';', ',', '\n']
+            for sep in separators:
+                if sep in text:
+                    return [t.strip() for t in text.split(sep) if t.strip()]
+            return [text]
+
+        def parse_task_dict(data):
+            if not isinstance(data, dict):
+                return None
+            content = data.get("content") or data.get("text") or data.get("body")
+            if isinstance(content, list):
+                content = "\n".join(str(v) for v in content if v is not None)
+            if content is not None:
+                content = str(content).strip()
+            title = data.get("title")
+            if title is not None:
+                title = str(title).strip()
+            channel_value = data.get("channel_id") or data.get("channel")
+            channel_id = None
+            if channel_value:
+                try:
+                    channel_id = int(str(channel_value).strip())
+                except ValueError:
+                    channel_id = None
+            image_value = data.get("image_path") or data.get("images") or data.get("image")
+            image_path = None
+            if isinstance(image_value, list):
+                image_path = ";".join(str(v) for v in image_value if str(v).strip())
+            elif image_value:
+                image_path = str(image_value).strip()
+            tags = parse_tags(data.get("tags"))
+            return {
+                "content": content,
+                "title": title or None,
+                "channel_id": channel_id,
+                "image_path": image_path or None,
+                "tags": tags
+            }
+
+        def parse_task_folder(path):
+            content = None
+            title = None
+            channel_id = None
+            tags = []
+
+            title_path = os.path.join(path, "title.txt")
+            if os.path.exists(title_path):
+                with open(title_path, "r", encoding="utf-8") as f:
+                    title = f.read().strip()
+
+            channel_path = os.path.join(path, "channel.txt")
+            if os.path.exists(channel_path):
+                with open(channel_path, "r", encoding="utf-8") as f:
+                    channel_text = f.read().strip()
+                if channel_text:
+                    try:
+                        channel_id = int(channel_text)
+                    except ValueError:
+                        channel_id = None
+
+            tags_path = os.path.join(path, "tags.txt")
+            if os.path.exists(tags_path):
+                with open(tags_path, "r", encoding="utf-8") as f:
+                    tags = parse_tags(f.read())
+
+            content_path = os.path.join(path, "content.txt")
+            if os.path.exists(content_path):
+                with open(content_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+            else:
+                text_files = [f for f in os.listdir(path) if f.lower().endswith((".txt", ".md"))]
+                if text_files:
+                    first_text = os.path.join(path, text_files[0])
+                    with open(first_text, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                    if not title:
+                        title = os.path.splitext(text_files[0])[0]
+
+            image_files = []
+            for name in os.listdir(path):
+                lower_name = name.lower()
+                if lower_name.endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
+                    image_files.append(os.path.join(path, name))
+            image_path = ";".join(image_files) if image_files else None
+
+            return {
+                "content": content,
+                "title": title or None,
+                "channel_id": channel_id,
+                "image_path": image_path,
+                "tags": tags
+            }
+
+        tasks = []
+        json_files = [f for f in os.listdir(folder) if f.lower().endswith(".json")]
+        csv_files = [f for f in os.listdir(folder) if f.lower().endswith(".csv")]
+
+        for filename in json_files:
+            try:
+                with open(os.path.join(folder, filename), "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    for item in data:
+                        task = parse_task_dict(item)
+                        if task:
+                            tasks.append(task)
+                elif isinstance(data, dict):
+                    items = data.get("tasks") or data.get("data")
+                    if isinstance(items, list):
+                        for item in items:
+                            task = parse_task_dict(item)
+                            if task:
+                                tasks.append(task)
+                    else:
+                        task = parse_task_dict(data)
+                        if task:
+                            tasks.append(task)
+            except Exception as e:
+                self.add_log(f"读取JSON失败: {filename} - {e}", "warning")
+
+        for filename in csv_files:
+            try:
+                with open(os.path.join(folder, filename), "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        task = parse_task_dict(row)
+                        if task:
+                            tasks.append(task)
+            except Exception as e:
+                self.add_log(f"读取CSV失败: {filename} - {e}", "warning")
+
+        if not tasks:
+            subdirs = [os.path.join(folder, d) for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))]
+            if subdirs:
+                for subdir in sorted(subdirs):
+                    task = parse_task_folder(subdir)
+                    if task:
+                        tasks.append(task)
+            else:
+                text_files = [f for f in os.listdir(folder) if f.lower().endswith((".txt", ".md"))]
+                for filename in sorted(text_files):
+                    with open(os.path.join(folder, filename), "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                    if not content:
+                        continue
+                    title = os.path.splitext(filename)[0]
+                    base_name = os.path.splitext(filename)[0]
+                    image_path = None
+                    for ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+                        candidate = os.path.join(folder, base_name + ext)
+                        if os.path.exists(candidate):
+                            image_path = candidate
+                            break
+                    tasks.append({
+                        "content": content,
+                        "title": title,
+                        "channel_id": None,
+                        "image_path": image_path,
+                        "tags": []
+                    })
+
+        if not tasks:
+            QMessageBox.information(self, "提示", "未发现可读取的素材")
+            return
+
+        added = 0
+        skipped = 0
+        for task in tasks:
+            content = task.get("content")
+            if not content:
+                skipped += 1
+                continue
+            channel_id = task.get("channel_id")
+            if channel_id is None and not self.discord_manager.default_posting_channel_id:
+                skipped += 1
+                continue
+            self.discord_manager.add_posting_task(
+                content,
+                channel_id,
+                task.get("image_path"),
+                0,
+                task.get("title"),
+                task.get("tags")
+            )
+            added += 1
+
+        self.update_posting_tasks_list()
+        self.save_config()
+        QMessageBox.information(self, "完成", f"已读取 {added} 条素材，跳过 {skipped} 条")
+
     def remove_posting_task_by_id(self, row):
         """根据表格行号删除发帖任务（通过任务ID）"""
         # 从表格项中获取任务ID
@@ -2957,6 +3223,25 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "成功", "发帖任务已删除")
             else:
                 QMessageBox.warning(self, "错误", "未找到要删除的任务")
+
+    def clear_posting_tasks(self):
+        """一键删除所有发帖任务"""
+        if not self.discord_manager.posting_tasks:
+            QMessageBox.information(self, "提示", "当前没有发帖任务")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除所有发帖任务吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.discord_manager.posting_tasks.clear()
+            self.update_posting_tasks_list()
+            self.save_config()
+            self.add_log("所有发帖任务已删除", "info")
 
     def remove_comment_task_by_row(self, row):
         """根据行号删除评论任务"""
@@ -3103,9 +3388,12 @@ class MainWindow(QMainWindow):
             self.posting_tasks_table.setItem(row, 1, QTableWidgetItem(str(task.channel_id)))
             self.posting_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
             status_text = "激活" if task.is_active else "禁用"
-            if task.is_active and task.next_run_at:
-                remaining = max(0, int(task.next_run_at - time.time()))
-                status_text = f"激活 | 倒计时: {remaining}秒"
+            if task.is_active:
+                if task.next_run_at is not None:
+                    remaining = max(0, int(task.next_run_at - time.time()))
+                    status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
+                else:
+                    status_text = "激活 | 待发送"
             self.posting_tasks_table.setItem(row, 3, QTableWidgetItem(status_text))
 
             # 创建操作按钮
@@ -3205,9 +3493,10 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.warning(self, "错误", "未找到要删除的任务")
 
-    def on_posting_interval_changed(self):
+    def on_posting_interval_changed(self, value=None):
         """发帖间隔改变"""
-        value = self.posting_interval_spin.value()
+        if value is None:
+            value = self.posting_interval_spin.value()
         self.discord_manager.posting_interval = value
         self.save_config()
 
@@ -3242,15 +3531,47 @@ class MainWindow(QMainWindow):
         self.discord_manager.default_posting_channel_id = channel_id
         self.save_config()
 
-    def on_comment_interval_changed(self):
+    def on_default_posting_tags_changed(self):
+        """默认发帖标签改变"""
+        value = self.posting_default_tags_input.text().strip()
+        if not value:
+            self.discord_manager.default_posting_tags = []
+            self.save_config()
+            return
+
+        separators = [';', ',', '\n']
+        tags = None
+        for sep in separators:
+            if sep in value:
+                tags = [t.strip() for t in value.split(sep) if t.strip()]
+                break
+        if tags is None:
+            tags = [value]
+
+        self.discord_manager.default_posting_tags = tags
+        self.save_config()
+
+    def on_comment_interval_changed(self, value=None):
         """评论间隔改变"""
-        value = self.comment_interval_spin.value()
+        if value is None:
+            value = self.comment_interval_spin.value()
         self.discord_manager.comment_interval = value
         self.save_config()
 
-    def on_comment_link_interval_changed(self):
+    def on_comment_repeat_enabled_changed(self, state):
+        """循环评论任务开关"""
+        enabled = state == Qt.CheckState.Checked
+        self.discord_manager.comment_repeat_enabled = enabled
+        self.save_config()
+        if enabled:
+            self.add_log("评论任务将循环发送", "info")
+        else:
+            self.add_log("评论任务将仅执行一次", "info")
+
+    def on_comment_link_interval_changed(self, value=None):
         """评论多链接间隔改变"""
-        value = self.comment_link_interval_spin.value()
+        if value is None:
+            value = self.comment_link_interval_spin.value()
         self.discord_manager.comment_link_interval = value
         self.save_config()
 
@@ -3264,9 +3585,12 @@ class MainWindow(QMainWindow):
             self.comment_tasks_table.setItem(row, 1, QTableWidgetItem(task.message_link))
             self.comment_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
             status_text = "激活" if task.is_active else "禁用"
-            if task.is_active and task.next_run_at:
-                remaining = max(0, int(task.next_run_at - time.time()))
-                status_text = f"激活 | 倒计时: {remaining}秒"
+            if task.is_active:
+                if task.next_run_at is not None:
+                    remaining = max(0, int(task.next_run_at - time.time()))
+                    status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
+                else:
+                    status_text = "激活 | 待发送"
             self.comment_tasks_table.setItem(row, 3, QTableWidgetItem(status_text))
 
             # 创建操作按钮
@@ -3349,7 +3673,7 @@ class PostingTaskDialog(QDialog):
         tags_layout = QHBoxLayout()
         tags_layout.addWidget(QLabel("标签 (可选):"))
         self.tags_input = QLineEdit()
-        self.tags_input.setPlaceholderText("标签名称或ID，多个用逗号或分号分隔")
+        self.tags_input.setPlaceholderText("留空使用默认标签；多个用逗号或分号分隔")
         tags_layout.addWidget(self.tags_input)
         layout.addLayout(tags_layout)
 
@@ -3399,7 +3723,7 @@ class PostingTaskDialog(QDialog):
         tags_text = self.tags_input.text().strip()
         tags = []
         if tags_text:
-            separators = [';', ',']
+            separators = [';', ',', '\n']
             for sep in separators:
                 if sep in tags_text:
                     tags = [t.strip() for t in tags_text.split(sep) if t.strip()]
@@ -3575,6 +3899,10 @@ def main():
     timer = QTimer()
     timer.timeout.connect(window.update_status)
     timer.start(5000)  # 每5秒更新一次
+
+    countdown_timer = QTimer()
+    countdown_timer.timeout.connect(window.refresh_task_countdowns)
+    countdown_timer.start(1000)  # 每秒刷新倒计时
 
     # 运行Qt应用程序事件循环，不使用 asyncio.run()
     # PySide6 的事件循环会接管主线程
