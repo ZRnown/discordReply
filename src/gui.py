@@ -4,11 +4,11 @@ import time
 import os
 import json
 import csv
-from typing import List, Optional
+from typing import List, Optional, Dict
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QListWidget, QListWidgetItem, QPushButton, QLabel,
-    QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox,
+    QTabWidget, QTabBar, QListWidget, QListWidgetItem, QPushButton, QLabel,
+    QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox, QInputDialog,
     QCheckBox, QGroupBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox, QFileDialog, QSplitter, QProgressBar,
     QDialog, QMenu, QScrollArea, QFrame, QAbstractItemView
@@ -106,26 +106,26 @@ class AccountDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # Token输入
+        # 账号输入
         token_layout = QHBoxLayout()
-        token_layout.addWidget(QLabel("Token:"))
+        token_layout.addWidget(QLabel("账号:"))
         self.token_input = QLineEdit()
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token_input.setPlaceholderText("输入用户Token")
+        self.token_input.setPlaceholderText("输入账号")
         if self.account:
             self.token_input.setText(self.account.token)
         self.token_input.textChanged.connect(self.on_token_changed)
         token_layout.addWidget(self.token_input)
 
         # 验证按钮
-        self.validate_btn = QPushButton("验证Token")
+        self.validate_btn = QPushButton("验证账号")
         self.validate_btn.clicked.connect(self.validate_token)
         token_layout.addWidget(self.validate_btn)
 
         # 帮助按钮
         help_btn = QPushButton("❓")
         help_btn.setMaximumWidth(30)
-        help_btn.setToolTip("如何获取Token")
+        help_btn.setToolTip("如何获取账号")
         help_btn.clicked.connect(self.show_token_help)
         token_layout.addWidget(help_btn)
 
@@ -170,7 +170,7 @@ class AccountDialog(QDialog):
             self.update_validation_status()
 
     def on_token_changed(self):
-        """Token输入改变时重置验证状态"""
+        """账号输入改变时重置验证状态"""
         if not self.is_validating:
             self.status_label.setText("")
             self.status_label.setStyleSheet("color: gray; font-style: italic;")
@@ -181,27 +181,27 @@ class AccountDialog(QDialog):
             if self.account.is_valid and self.account.user_info and isinstance(self.account.user_info, dict):
                 user_info = self.account.user_info
                 username = f"{user_info.get('name', 'Unknown')}#{user_info.get('discriminator', '0000')}"
-                self.status_label.setText(f"✅ Token有效 - 用户名: {username}")
+                self.status_label.setText(f"✅ 账号有效 - 用户名: {username}")
                 self.status_label.setStyleSheet("color: green;")
             else:
-                self.status_label.setText("❌ Token无效或已过期")
+                self.status_label.setText("❌ 账号无效或已过期")
                 self.status_label.setStyleSheet("color: red;")
         else:
-            self.status_label.setText("⚠️ Token未验证")
+            self.status_label.setText("⚠️ 账号未验证")
             self.status_label.setStyleSheet("color: orange;")
 
     async def validate_token_async(self):
-        """异步验证Token"""
+        """异步验证账号"""
         token = self.token_input.text().strip()
         if not token:
-            self.status_label.setText("❌ 请输入Token")
+            self.status_label.setText("❌ 请输入账号")
             self.status_label.setStyleSheet("color: red;")
             return
 
         self.is_validating = True
         self.validate_btn.setEnabled(False)
         self.validate_btn.setText("验证中...")
-        self.status_label.setText("🔄 正在验证Token，请稍候...")
+        self.status_label.setText("🔄 正在验证账号，请稍候...")
         self.status_label.setStyleSheet("color: blue;")
 
         # 强制更新UI
@@ -223,26 +223,26 @@ class AccountDialog(QDialog):
             if is_valid and user_info and isinstance(user_info, dict):
                 username = f"{user_info.get('name', 'Unknown')}#{user_info.get('discriminator', '0000')}"
                 bot_status = "🤖 机器人账号" if user_info.get('bot', False) else "👤 用户账号"
-                self.status_label.setText(f"✅ Token有效\n{bot_status}\n👤 用户名: {username}\n🔗 验证成功！")
+                self.status_label.setText(f"✅ 账号有效\n{bot_status}\n👤 用户名: {username}\n🔗 验证成功！")
                 self.status_label.setStyleSheet("color: green;")
             else:
                 # 提供更友好的错误信息
                 if "401" in error_msg or "Unauthorized" in error_msg:
-                    friendly_msg = "Token无效或已过期，请重新获取"
+                    friendly_msg = "账号无效或已过期，请重新获取"
                 elif "Improper token" in error_msg:
-                    friendly_msg = "Token格式错误，请检查是否正确复制"
+                    friendly_msg = "账号格式错误，请检查是否正确复制"
                 elif "429" in error_msg:
                     friendly_msg = "请求过于频繁，请稍后再试"
                 elif "403" in error_msg:
-                    friendly_msg = "Token权限不足"
+                    friendly_msg = "账号权限不足"
                 elif "timeout" in error_msg.lower():
                     friendly_msg = "连接超时，请检查网络"
                 elif "格式" in error_msg:
                     friendly_msg = error_msg
                 else:
-                    friendly_msg = "Token验证失败，请检查Token是否正确"
+                    friendly_msg = "账号验证失败，请检查账号是否正确"
 
-                self.status_label.setText(f"❌ Token无效\n💡 {friendly_msg}\n🔍 原始错误: {error_msg}")
+                self.status_label.setText(f"❌ 账号无效\n💡 {friendly_msg}\n🔍 原始错误: {error_msg}")
                 self.status_label.setStyleSheet("color: red;")
 
         except Exception as e:
@@ -251,15 +251,15 @@ class AccountDialog(QDialog):
         finally:
             self.is_validating = False
             self.validate_btn.setEnabled(True)
-            self.validate_btn.setText("验证Token")
+            self.validate_btn.setText("验证账号")
 
     def validate_token(self):
-        """验证Token（同步包装器）"""
+        """验证账号（同步包装器）"""
         # 创建新的事件循环来运行异步验证
         # 注意：这会暂时阻塞GUI，但在PySide6不使用qasync的情况下，这是处理短时间异步任务的简单方法
         try:
             # 显示验证开始状态
-            self.status_label.setText("🔄 正在验证Token，请稍候...")
+            self.status_label.setText("🔄 正在验证账号，请稍候...")
             self.status_label.setStyleSheet("color: blue;")
             QApplication.processEvents()  # 强制更新UI
 
@@ -275,13 +275,13 @@ class AccountDialog(QDialog):
             self.status_label.setStyleSheet("color: red;")
 
     def show_token_help(self):
-        """显示Token获取帮助"""
+        """显示账号获取帮助"""
         help_text = """
-        <h3>如何获取Token</h3>
+        <h3>如何获取账号</h3>
 
-        <p><b>重要提醒：</b>请谨慎使用Token，不要泄露给他人！</p>
+        <p><b>重要提醒：</b>请谨慎使用账号信息，不要泄露给他人！</p>
 
-        <h4>获取用户Token（推荐用于个人使用）：</h4>
+        <h4>获取用户账号（推荐用于个人使用）：</h4>
         <ol>
         <li>打开网页版或桌面客户端</li>
         <li>按 <b>F12</b> 打开开发者工具</li>
@@ -291,22 +291,22 @@ class AccountDialog(QDialog):
         <li>复制 <b>value</b> 列的值（不包含引号）</li>
         </ol>
 
-        <h4>Token格式示例：</h4>
+        <h4>账号格式示例：</h4>
         <p><code>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</code></p>
         <p>或</p>
         <p><code>XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX</code></p>
 
         <h4>常见错误：</h4>
         <ul>
-        <li><b>401 Unauthorized</b>: Token无效或已过期</li>
-        <li><b>Improper token</b>: Token格式错误</li>
-        <li><b>403 Forbidden</b>: Token权限不足</li>
+        <li><b>401 Unauthorized</b>: 账号无效或已过期</li>
+        <li><b>Improper token</b>: 账号格式错误</li>
+        <li><b>403 Forbidden</b>: 账号权限不足</li>
         </ul>
 
-        <p><b>注意：</b>Token会定期过期，建议定期更新。</p>
+        <p><b>注意：</b>账号可能会定期过期，建议定期更新。</p>
         """
 
-        QMessageBox.information(self, "Token获取指南",
+        QMessageBox.information(self, "账号获取指南",
                                help_text, QMessageBox.StandardButton.Ok)
 
     def accept_and_validate(self):
@@ -318,8 +318,8 @@ class AccountDialog(QDialog):
         # 检查验证结果
         if "❌" in self.status_label.text():
             reply = QMessageBox.question(
-                self, "Token无效",
-                "Token验证失败，确定要继续保存吗？",
+                self, "账号无效",
+                "账号验证失败，确定要继续保存吗？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.No:
@@ -696,6 +696,8 @@ class MainWindow(QMainWindow):
         self.discord_manager = DiscordManager(log_callback=self.add_log_thread_safe)
         self.config_manager = ConfigManager()
         self.worker_thread = None
+        self.workspaces = []
+        self.active_workspace_index = 0
 
         self.init_ui()
         self.load_config()
@@ -720,6 +722,31 @@ class MainWindow(QMainWindow):
 
         # 创建主布局
         main_layout = QVBoxLayout(central_widget)
+
+        # 工作区（多页面）栏
+        workspace_layout = QHBoxLayout()
+        workspace_layout.addWidget(QLabel("页面:"))
+        self.workspace_tabbar = QTabBar()
+        self.workspace_tabbar.setExpanding(False)
+        self.workspace_tabbar.setMovable(False)
+        self.workspace_tabbar.currentChanged.connect(self.on_workspace_changed)
+        self.workspace_tabbar.tabBarDoubleClicked.connect(self.rename_workspace)
+        workspace_layout.addWidget(self.workspace_tabbar)
+
+        add_workspace_btn = QPushButton("新增页面")
+        add_workspace_btn.clicked.connect(self.add_workspace)
+        workspace_layout.addWidget(add_workspace_btn)
+
+        rename_workspace_btn = QPushButton("重命名")
+        rename_workspace_btn.clicked.connect(self.rename_workspace)
+        workspace_layout.addWidget(rename_workspace_btn)
+
+        delete_workspace_btn = QPushButton("删除页面")
+        delete_workspace_btn.clicked.connect(self.delete_workspace)
+        workspace_layout.addWidget(delete_workspace_btn)
+
+        workspace_layout.addStretch()
+        main_layout.addLayout(workspace_layout)
 
         # 创建标签页
         self.tab_widget = QTabWidget()
@@ -803,16 +830,24 @@ class MainWindow(QMainWindow):
         revalidate_all_btn.clicked.connect(self.revalidate_all_accounts)
         header_layout.addWidget(revalidate_all_btn)
 
+        bulk_import_btn = QPushButton("一键导入账号")
+        bulk_import_btn.clicked.connect(self.bulk_import_accounts)
+        header_layout.addWidget(bulk_import_btn)
+
         add_account_btn = QPushButton("添加账号")
         add_account_btn.clicked.connect(self.add_account)
         header_layout.addWidget(add_account_btn)
+
+        clear_accounts_btn = QPushButton("一键删除")
+        clear_accounts_btn.clicked.connect(self.clear_all_accounts)
+        header_layout.addWidget(clear_accounts_btn)
 
         layout.addLayout(header_layout)
 
         # 账号表格
         self.accounts_table = QTableWidget()
-        self.accounts_table.setColumnCount(3)
-        self.accounts_table.setHorizontalHeaderLabels(["用户名", "Token状态", "操作"])
+        self.accounts_table.setColumnCount(4)
+        self.accounts_table.setHorizontalHeaderLabels(["序号", "账号", "账号状态", "操作"])
         self.accounts_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.accounts_table.setAlternatingRowColors(True)
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -860,6 +895,20 @@ class MainWindow(QMainWindow):
         rotation_row.addWidget(self.rotation_status_label)
 
         rotation_layout.addLayout(rotation_row)
+
+        # 自动回复启动倒计时
+        reply_start_layout = QHBoxLayout()
+        reply_start_layout.addWidget(QLabel("回复启动倒计时(秒):"))
+        self.reply_start_delay_spin = QSpinBox()
+        self.reply_start_delay_spin.setRange(0, 86400)
+        self.reply_start_delay_spin.setValue(getattr(self.discord_manager, "reply_start_delay", 0))
+        self.reply_start_delay_spin.setSuffix("秒")
+        self.reply_start_delay_spin.valueChanged.connect(self.on_reply_start_delay_changed)
+        reply_start_layout.addWidget(self.reply_start_delay_spin)
+        self.reply_start_countdown_label = QLabel("启动倒计时: 未启用")
+        reply_start_layout.addWidget(self.reply_start_countdown_label)
+        reply_start_layout.addStretch()
+        rotation_layout.addLayout(reply_start_layout)
 
         # 分隔线
         line = QFrame()
@@ -957,6 +1006,13 @@ class MainWindow(QMainWindow):
         rules_layout.addWidget(self.rules_stats_label)
 
         layout.addWidget(rules_group)
+
+        # 发送统计
+        task_stats_group = QGroupBox("发送统计")
+        task_stats_layout = QVBoxLayout(task_stats_group)
+        self.task_stats_label = QLabel("已发送: 回复 0 | 发帖 0 | 评论 0")
+        task_stats_layout.addWidget(self.task_stats_label)
+        layout.addWidget(task_stats_group)
 
         # 许可证状态
         license_group = QGroupBox("许可证状态")
@@ -1139,7 +1195,7 @@ class MainWindow(QMainWindow):
         posting_interval_layout = QHBoxLayout()
         posting_interval_layout.addWidget(QLabel("发帖间隔(秒):"))
         self.posting_interval_spin = QSpinBox()
-        self.posting_interval_spin.setRange(30, 86400)  # 30秒到24小时
+        self.posting_interval_spin.setRange(0, 86400)  # 0秒到24小时
         self.posting_interval_spin.setValue(30)  # 默认30秒
         self.posting_interval_spin.setSuffix("秒")
         self.posting_interval_spin.setEnabled(True)  # 发帖间隔应该始终可用
@@ -1147,6 +1203,20 @@ class MainWindow(QMainWindow):
         posting_interval_layout.addWidget(self.posting_interval_spin)
         posting_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(posting_interval_layout)
+
+        # 发帖启动倒计时
+        posting_start_layout = QHBoxLayout()
+        posting_start_layout.addWidget(QLabel("启动倒计时(秒):"))
+        self.posting_start_delay_spin = QSpinBox()
+        self.posting_start_delay_spin.setRange(0, 86400)
+        self.posting_start_delay_spin.setValue(getattr(self.discord_manager, "posting_start_delay", 0))
+        self.posting_start_delay_spin.setSuffix("秒")
+        self.posting_start_delay_spin.valueChanged.connect(self.on_posting_start_delay_changed)
+        posting_start_layout.addWidget(self.posting_start_delay_spin)
+        self.posting_start_countdown_label = QLabel("启动倒计时: 未启用")
+        posting_start_layout.addWidget(self.posting_start_countdown_label)
+        posting_start_layout.addStretch()
+        rotation_accounts_layout.addLayout(posting_start_layout)
 
         # 循环发送设置
         repeat_layout = QHBoxLayout()
@@ -1211,8 +1281,8 @@ class MainWindow(QMainWindow):
 
         # 任务表格
         self.posting_tasks_table = QTableWidget()
-        self.posting_tasks_table.setColumnCount(5)
-        self.posting_tasks_table.setHorizontalHeaderLabels(["内容", "频道ID", "图片", "状态", "操作"])
+        self.posting_tasks_table.setColumnCount(6)
+        self.posting_tasks_table.setHorizontalHeaderLabels(["标题", "内容", "频道ID", "图片", "状态", "操作"])
         self.posting_tasks_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         tasks_layout.addWidget(self.posting_tasks_table)
 
@@ -1280,7 +1350,7 @@ class MainWindow(QMainWindow):
         comment_interval_layout = QHBoxLayout()
         comment_interval_layout.addWidget(QLabel("评论间隔(秒):"))
         self.comment_interval_spin = QSpinBox()
-        self.comment_interval_spin.setRange(30, 86400)  # 30秒到24小时
+        self.comment_interval_spin.setRange(0, 86400)  # 0秒到24小时
         self.comment_interval_spin.setValue(30)  # 默认30秒
         self.comment_interval_spin.setSuffix("秒")
         self.comment_interval_spin.setEnabled(True)  # 评论间隔应该始终可用
@@ -1288,6 +1358,20 @@ class MainWindow(QMainWindow):
         comment_interval_layout.addWidget(self.comment_interval_spin)
         comment_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(comment_interval_layout)
+
+        # 评论启动倒计时
+        comment_start_layout = QHBoxLayout()
+        comment_start_layout.addWidget(QLabel("启动倒计时(秒):"))
+        self.comment_start_delay_spin = QSpinBox()
+        self.comment_start_delay_spin.setRange(0, 86400)
+        self.comment_start_delay_spin.setValue(getattr(self.discord_manager, "comment_start_delay", 0))
+        self.comment_start_delay_spin.setSuffix("秒")
+        self.comment_start_delay_spin.valueChanged.connect(self.on_comment_start_delay_changed)
+        comment_start_layout.addWidget(self.comment_start_delay_spin)
+        self.comment_start_countdown_label = QLabel("启动倒计时: 未启用")
+        comment_start_layout.addWidget(self.comment_start_countdown_label)
+        comment_start_layout.addStretch()
+        rotation_accounts_layout.addLayout(comment_start_layout)
 
         # 循环评论设置
         comment_repeat_layout = QHBoxLayout()
@@ -1504,7 +1588,7 @@ class MainWindow(QMainWindow):
 
     def load_config(self):
         """加载配置"""
-        accounts, rules, license_config, rotation_config, posting_tasks, comment_tasks = self.config_manager.load_config()
+        accounts, rules, license_config, rotation_config, posting_tasks, comment_tasks, workspaces, active_workspace = self.config_manager.load_config()
         self.discord_manager.accounts = accounts
         self.discord_manager.rules = rules
         for task in posting_tasks:
@@ -1513,6 +1597,18 @@ class MainWindow(QMainWindow):
             task.next_run_at = None
         self.discord_manager.posting_tasks = posting_tasks
         self.discord_manager.comment_tasks = comment_tasks
+        self.workspaces = workspaces if workspaces else []
+        self.active_workspace_index = active_workspace if active_workspace is not None else 0
+
+        if not self.workspaces:
+            self.workspaces = [{
+                "name": "工具1",
+                "rules": self.discord_manager.rules,
+                "posting_tasks": self.discord_manager.posting_tasks,
+                "comment_tasks": self.discord_manager.comment_tasks,
+                "rotation": rotation_config or {}
+            }]
+            self.active_workspace_index = 0
 
         # 许可证配置（固定服务器，不使用认证信息）
         license_key = license_config.get("license_key", "").strip()
@@ -1533,23 +1629,7 @@ class MainWindow(QMainWindow):
                 self.discord_manager.license_manager.license_info = license_info
 
         # 加载轮换设置
-        if rotation_config:
-            self.discord_manager.rotation_enabled = rotation_config.get("rotation_enabled", False)
-            self.discord_manager.rotation_interval = rotation_config.get("rotation_interval", 600)  # 默认10分钟
-            self.discord_manager.posting_rotation_enabled = rotation_config.get("posting_rotation_enabled", False)
-            self.discord_manager.posting_rotation_count = rotation_config.get("posting_rotation_count", 10)
-            self.discord_manager.comment_rotation_enabled = rotation_config.get("comment_rotation_enabled", False)
-            self.discord_manager.comment_rotation_count = rotation_config.get("comment_rotation_count", 10)
-            self.discord_manager.posting_interval = rotation_config.get("posting_interval", 30)  # 默认30秒
-            self.discord_manager.comment_interval = rotation_config.get("comment_interval", 30)  # 默认30秒
-            self.discord_manager.posting_repeat_enabled = rotation_config.get("posting_repeat_enabled", False)
-            self.discord_manager.comment_repeat_enabled = rotation_config.get("comment_repeat_enabled", False)
-            self.discord_manager.comment_link_interval = rotation_config.get("comment_link_interval", 5)
-            self.discord_manager.default_posting_channel_id = rotation_config.get("default_posting_channel_id")
-            default_tags = rotation_config.get("default_posting_tags", [])
-            if isinstance(default_tags, str):
-                default_tags = [t.strip() for t in default_tags.replace("\n", ",").split(",") if t.strip()]
-            self.discord_manager.default_posting_tags = default_tags
+        self.apply_rotation_config(rotation_config)
 
         self.update_accounts_list()
         self.update_rules_list()
@@ -1558,6 +1638,44 @@ class MainWindow(QMainWindow):
         self.update_status()
 
         # 设置发帖和评论间隔的值
+        self.sync_rotation_controls()
+
+        # 更新任务列表显示
+        self.update_posting_tasks_list()
+        self.update_comment_tasks_list()
+        self.refresh_start_countdowns()
+
+        # 初始化工作区标签
+        self.refresh_workspace_tabs()
+
+    def apply_rotation_config(self, rotation_config: Dict):
+        """应用轮换/间隔/默认配置到管理器"""
+        if not rotation_config:
+            return
+        self.discord_manager.rotation_enabled = rotation_config.get("rotation_enabled", False)
+        self.discord_manager.rotation_interval = rotation_config.get("rotation_interval", 600)  # 默认10分钟
+        self.discord_manager.posting_rotation_enabled = rotation_config.get("posting_rotation_enabled", False)
+        self.discord_manager.posting_rotation_count = rotation_config.get("posting_rotation_count", 10)
+        self.discord_manager.comment_rotation_enabled = rotation_config.get("comment_rotation_enabled", False)
+        self.discord_manager.comment_rotation_count = rotation_config.get("comment_rotation_count", 10)
+        self.discord_manager.posting_interval = rotation_config.get("posting_interval", 30)  # 默认30秒
+        self.discord_manager.comment_interval = rotation_config.get("comment_interval", 30)  # 默认30秒
+        self.discord_manager.posting_repeat_enabled = rotation_config.get("posting_repeat_enabled", False)
+        self.discord_manager.comment_repeat_enabled = rotation_config.get("comment_repeat_enabled", False)
+        self.discord_manager.comment_link_interval = rotation_config.get("comment_link_interval", 5)
+        self.discord_manager.default_posting_channel_id = rotation_config.get("default_posting_channel_id")
+        self.discord_manager.posting_start_delay = rotation_config.get("posting_start_delay", 0)
+        self.discord_manager.comment_start_delay = rotation_config.get("comment_start_delay", 0)
+        self.discord_manager.reply_start_delay = rotation_config.get("reply_start_delay", 0)
+        self.discord_manager.posting_account_tokens = rotation_config.get("posting_account_tokens", []) or []
+        self.discord_manager.comment_account_tokens = rotation_config.get("comment_account_tokens", []) or []
+        default_tags = rotation_config.get("default_posting_tags", [])
+        if isinstance(default_tags, str):
+            default_tags = [t.strip() for t in default_tags.replace("\n", ",").split(",") if t.strip()]
+        self.discord_manager.default_posting_tags = default_tags
+
+    def sync_rotation_controls(self):
+        """将管理器配置同步到界面控件"""
         if hasattr(self, 'posting_interval_spin'):
             self.posting_interval_spin.setValue(self.discord_manager.posting_interval)
         if hasattr(self, 'comment_interval_spin'):
@@ -1578,10 +1696,154 @@ class MainWindow(QMainWindow):
                 self.posting_default_tags_input.clear()
         if hasattr(self, 'comment_link_interval_spin'):
             self.comment_link_interval_spin.setValue(self.discord_manager.comment_link_interval)
+        if hasattr(self, 'posting_start_delay_spin'):
+            self.posting_start_delay_spin.setValue(getattr(self.discord_manager, "posting_start_delay", 0))
+        if hasattr(self, 'comment_start_delay_spin'):
+            self.comment_start_delay_spin.setValue(getattr(self.discord_manager, "comment_start_delay", 0))
+        if hasattr(self, 'reply_start_delay_spin'):
+            self.reply_start_delay_spin.setValue(getattr(self.discord_manager, "reply_start_delay", 0))
 
-        # 更新任务列表显示
+    def collect_rotation_config(self) -> Dict:
+        """从管理器收集轮换/间隔/默认配置"""
+        return {
+            "rotation_enabled": self.discord_manager.rotation_enabled,
+            "rotation_interval": self.discord_manager.rotation_interval,
+            "posting_rotation_enabled": self.discord_manager.posting_rotation_enabled,
+            "posting_rotation_count": self.discord_manager.posting_rotation_count,
+            "comment_rotation_enabled": self.discord_manager.comment_rotation_enabled,
+            "comment_rotation_count": self.discord_manager.comment_rotation_count,
+            "posting_interval": self.discord_manager.posting_interval,
+            "comment_interval": self.discord_manager.comment_interval,
+            "posting_repeat_enabled": self.discord_manager.posting_repeat_enabled,
+            "comment_repeat_enabled": self.discord_manager.comment_repeat_enabled,
+            "comment_link_interval": self.discord_manager.comment_link_interval,
+            "default_posting_channel_id": self.discord_manager.default_posting_channel_id,
+            "default_posting_tags": self.discord_manager.default_posting_tags,
+            "posting_start_delay": getattr(self.discord_manager, "posting_start_delay", 0),
+            "comment_start_delay": getattr(self.discord_manager, "comment_start_delay", 0),
+            "reply_start_delay": getattr(self.discord_manager, "reply_start_delay", 0),
+            "posting_account_tokens": getattr(self.discord_manager, "posting_account_tokens", []),
+            "comment_account_tokens": getattr(self.discord_manager, "comment_account_tokens", [])
+        }
+
+    def refresh_workspace_tabs(self):
+        """刷新工作区标签显示"""
+        if not hasattr(self, 'workspace_tabbar'):
+            return
+        if not self.workspaces:
+            self.workspaces = [{
+                "name": "工具1",
+                "rules": self.discord_manager.rules,
+                "posting_tasks": self.discord_manager.posting_tasks,
+                "comment_tasks": self.discord_manager.comment_tasks,
+                "rotation": self.collect_rotation_config()
+            }]
+            self.active_workspace_index = 0
+
+        self.workspace_tabbar.blockSignals(True)
+        while self.workspace_tabbar.count() > 0:
+            self.workspace_tabbar.removeTab(0)
+        for ws in self.workspaces:
+            self.workspace_tabbar.addTab(ws.get("name", "工具"))
+        if 0 <= self.active_workspace_index < self.workspace_tabbar.count():
+            self.workspace_tabbar.setCurrentIndex(self.active_workspace_index)
+        self.workspace_tabbar.blockSignals(False)
+
+    def sync_current_workspace(self):
+        """将当前管理器数据同步到活动工作区"""
+        if not self.workspaces:
+            return
+        ws = self.workspaces[self.active_workspace_index]
+        ws["rules"] = self.discord_manager.rules
+        ws["posting_tasks"] = self.discord_manager.posting_tasks
+        ws["comment_tasks"] = self.discord_manager.comment_tasks
+        ws["rotation"] = self.collect_rotation_config()
+
+    def load_workspace(self, index: int):
+        """加载指定工作区到管理器"""
+        if not (0 <= index < len(self.workspaces)):
+            return
+        ws = self.workspaces[index]
+        self.discord_manager.rules = ws.get("rules", [])
+        self.discord_manager.posting_tasks = ws.get("posting_tasks", [])
+        self.discord_manager.comment_tasks = ws.get("comment_tasks", [])
+        self.apply_rotation_config(ws.get("rotation", {}))
+        self.sync_rotation_controls()
+        self.update_rules_list()
         self.update_posting_tasks_list()
         self.update_comment_tasks_list()
+        self.update_function_buttons()
+        self.refresh_start_countdowns()
+
+    def on_workspace_changed(self, index: int):
+        """切换工作区"""
+        if index == self.active_workspace_index or index < 0:
+            return
+        # 运行中不允许切换，避免任务混乱
+        if (self.discord_manager.reply_enabled or self.discord_manager.posting_enabled or
+                self.discord_manager.comment_enabled):
+            QMessageBox.warning(self, "提示", "请先关闭自动回复/发帖/评论后再切换页面")
+            self.workspace_tabbar.setCurrentIndex(self.active_workspace_index)
+            return
+        self.sync_current_workspace()
+        self.active_workspace_index = index
+        self.load_workspace(index)
+        self.save_config()
+
+    def add_workspace(self):
+        """新增工作区"""
+        self.sync_current_workspace()
+        new_index = len(self.workspaces) + 1
+        new_name = f"工具{new_index}"
+        self.workspaces.append({
+            "name": new_name,
+            "rules": [],
+            "posting_tasks": [],
+            "comment_tasks": [],
+            "rotation": self.collect_rotation_config()
+        })
+        self.refresh_workspace_tabs()
+        self.workspace_tabbar.setCurrentIndex(len(self.workspaces) - 1)
+        self.save_config()
+
+    def rename_workspace(self, index=None):
+        """重命名工作区"""
+        if index is None or index < 0:
+            index = self.workspace_tabbar.currentIndex() if hasattr(self, 'workspace_tabbar') else -1
+        if not (0 <= index < len(self.workspaces)):
+            return
+        current_name = self.workspaces[index].get("name", f"工具{index + 1}")
+        new_name, ok = QInputDialog.getText(self, "重命名页面", "输入新名称:", text=current_name)
+        if ok and new_name.strip():
+            self.workspaces[index]["name"] = new_name.strip()
+            self.workspace_tabbar.setTabText(index, new_name.strip())
+            self.save_config()
+
+    def delete_workspace(self):
+        """删除当前工作区"""
+        if len(self.workspaces) <= 1:
+            QMessageBox.information(self, "提示", "至少需要保留一个页面")
+            return
+        if (self.discord_manager.reply_enabled or self.discord_manager.posting_enabled or
+                self.discord_manager.comment_enabled):
+            QMessageBox.warning(self, "提示", "请先关闭自动回复/发帖/评论后再删除页面")
+            return
+        index = self.workspace_tabbar.currentIndex()
+        if not (0 <= index < len(self.workspaces)):
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除页面 '{self.workspaces[index].get('name', '')}' 吗？此操作无法撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self.workspaces.pop(index)
+        if self.active_workspace_index >= len(self.workspaces):
+            self.active_workspace_index = len(self.workspaces) - 1
+        self.refresh_workspace_tabs()
+        self.load_workspace(self.active_workspace_index)
+        self.save_config()
 
     def update_function_buttons(self):
         """更新功能按钮状态"""
@@ -1630,6 +1892,8 @@ class MainWindow(QMainWindow):
 
     def save_config(self):
         """保存配置"""
+        if self.workspaces:
+            self.sync_current_workspace()
         # 使用当前有效的许可证密钥，如果没有则使用空字符串
         current_license_key = getattr(self, 'license_key', '')
         if not current_license_key and hasattr(self, 'license_key_input'):
@@ -1645,21 +1909,7 @@ class MainWindow(QMainWindow):
         }
 
         # 轮换配置
-        rotation_config = {
-            "rotation_enabled": self.discord_manager.rotation_enabled,
-            "rotation_interval": self.discord_manager.rotation_interval,
-            "posting_rotation_enabled": self.discord_manager.posting_rotation_enabled,
-            "posting_rotation_count": self.discord_manager.posting_rotation_count,
-            "comment_rotation_enabled": self.discord_manager.comment_rotation_enabled,
-            "comment_rotation_count": self.discord_manager.comment_rotation_count,
-            "posting_interval": self.discord_manager.posting_interval,
-            "comment_interval": self.discord_manager.comment_interval,
-            "posting_repeat_enabled": self.discord_manager.posting_repeat_enabled,
-            "comment_repeat_enabled": self.discord_manager.comment_repeat_enabled,
-            "comment_link_interval": self.discord_manager.comment_link_interval,
-            "default_posting_channel_id": self.discord_manager.default_posting_channel_id,
-            "default_posting_tags": self.discord_manager.default_posting_tags
-        }
+        rotation_config = self.collect_rotation_config()
 
         self.config_manager.save_config(
             self.discord_manager.accounts,
@@ -1667,7 +1917,9 @@ class MainWindow(QMainWindow):
             license_config,
             rotation_config,
             self.discord_manager.posting_tasks,
-            self.discord_manager.comment_tasks
+            self.discord_manager.comment_tasks,
+            self.workspaces,
+            self.active_workspace_index
         )
 
     def update_accounts_list(self):
@@ -1675,13 +1927,18 @@ class MainWindow(QMainWindow):
         self.accounts_table.setRowCount(len(self.discord_manager.accounts))
 
         for row, account in enumerate(self.discord_manager.accounts):
-            # 用户名
+            # 序号
+            index_item = QTableWidgetItem(str(row + 1))
+            index_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.accounts_table.setItem(row, 0, index_item)
+
+            # 账号
             username = account.alias  # 使用alias属性，它会自动生成用户名
             username_item = QTableWidgetItem(username)
             username_item.setData(Qt.ItemDataRole.UserRole, account.token)  # 使用token作为标识
-            self.accounts_table.setItem(row, 0, username_item)
+            self.accounts_table.setItem(row, 1, username_item)
 
-            # Token状态
+            # 账号状态
             token_type = account.user_info.get('token_type') if account.user_info and isinstance(account.user_info, dict) else None
             if account.is_valid:
                 if token_type == 'bot':
@@ -1702,18 +1959,18 @@ class MainWindow(QMainWindow):
 
             # 添加工具提示
             if token_type == 'user':
-                token_status_item.setToolTip("用户Token可以验证但无法连接，请使用Bot Token")
+                token_status_item.setToolTip("用户账号可以验证但无法连接，请使用Bot账号")
             elif token_type == 'bot':
-                token_status_item.setToolTip("Bot Token，完全支持连接和消息处理")
+                token_status_item.setToolTip("Bot账号，完全支持连接和消息处理")
 
-            self.accounts_table.setItem(row, 1, token_status_item)
+            self.accounts_table.setItem(row, 2, token_status_item)
 
             # 操作按钮
             edit_btn = QPushButton("编辑")
-            edit_btn.clicked.connect(lambda checked, alias=account.alias: self.edit_account_by_alias(alias))
+            edit_btn.clicked.connect(lambda checked, token=account.token: self.edit_account_by_token(token))
 
             validate_btn = QPushButton("验证")
-            validate_btn.clicked.connect(lambda checked, alias=account.alias: self.revalidate_account_by_alias(alias))
+            validate_btn.clicked.connect(lambda checked, token=account.token: self.revalidate_account_by_token(token))
 
             delete_btn = QPushButton("删除")
             delete_btn.clicked.connect(lambda checked, token=account.token: self.remove_account_by_token(token))
@@ -1726,7 +1983,7 @@ class MainWindow(QMainWindow):
             button_layout.addWidget(validate_btn)
             button_layout.addWidget(delete_btn)
 
-            self.accounts_table.setCellWidget(row, 2, button_widget)
+            self.accounts_table.setCellWidget(row, 3, button_widget)
 
         # 更新统计信息
         total_accounts = len(self.discord_manager.accounts)
@@ -1759,11 +2016,18 @@ class MainWindow(QMainWindow):
             self.posting_accounts_combo.clear()
             self.posting_accounts_combo.addItem("随机使用所有账号")
 
-            for account in self.discord_manager.accounts:
-                if account.is_active and account.is_valid:
-                    self.posting_accounts_combo.addItem(f"仅使用 {account.alias}")
+            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+            for account in valid_accounts:
+                self.posting_accounts_combo.addItem(f"仅使用 {account.alias}")
 
-            if current_index < self.posting_accounts_combo.count():
+            selected_token = self.discord_manager.posting_account_tokens[0] if self.discord_manager.posting_account_tokens else None
+            if selected_token:
+                selected_index = next((i for i, acc in enumerate(valid_accounts) if acc.token == selected_token), None)
+                if selected_index is not None:
+                    self.posting_accounts_combo.setCurrentIndex(selected_index + 1)
+                else:
+                    self.posting_accounts_combo.setCurrentIndex(0)
+            elif current_index < self.posting_accounts_combo.count():
                 self.posting_accounts_combo.setCurrentIndex(current_index)
 
         # 更新自动评论组合框
@@ -1772,11 +2036,18 @@ class MainWindow(QMainWindow):
             self.comment_accounts_combo.clear()
             self.comment_accounts_combo.addItem("随机使用所有账号")
 
-            for account in self.discord_manager.accounts:
-                if account.is_active and account.is_valid:
-                    self.comment_accounts_combo.addItem(f"仅使用 {account.alias}")
+            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+            for account in valid_accounts:
+                self.comment_accounts_combo.addItem(f"仅使用 {account.alias}")
 
-            if current_index < self.comment_accounts_combo.count():
+            selected_token = self.discord_manager.comment_account_tokens[0] if self.discord_manager.comment_account_tokens else None
+            if selected_token:
+                selected_index = next((i for i, acc in enumerate(valid_accounts) if acc.token == selected_token), None)
+                if selected_index is not None:
+                    self.comment_accounts_combo.setCurrentIndex(selected_index + 1)
+                else:
+                    self.comment_accounts_combo.setCurrentIndex(0)
+            elif current_index < self.comment_accounts_combo.count():
                 self.comment_accounts_combo.setCurrentIndex(current_index)
 
     def update_rules_list(self):
@@ -1902,12 +2173,13 @@ class MainWindow(QMainWindow):
         for row in range(self.posting_tasks_table.rowCount()):
             show_row = True
             if search_text:
-                # 检查内容列是否包含搜索文本
-                content_item = self.posting_tasks_table.item(row, 0)
-                if content_item:
-                    content = content_item.text().lower()
-                    if search_text not in content:
-                        show_row = False
+                # 检查标题和内容列是否包含搜索文本
+                title_item = self.posting_tasks_table.item(row, 0)
+                content_item = self.posting_tasks_table.item(row, 1)
+                title_text = title_item.text().lower() if title_item else ""
+                content_text = content_item.text().lower() if content_item else ""
+                if search_text not in title_text and search_text not in content_text:
+                    show_row = False
 
             self.posting_tasks_table.setRowHidden(row, not show_row)
 
@@ -1997,6 +2269,15 @@ class MainWindow(QMainWindow):
             if self.rules_stats_label.text() != rules_text:
                 self.rules_stats_label.setText(rules_text)
 
+            if hasattr(self, 'task_stats_label'):
+                sent_text = (
+                    f"已发送: 回复 {status.get('reply_sent_total', 0)} | "
+                    f"发帖 {status.get('posting_sent_total', 0)} | "
+                    f"评论 {status.get('comment_sent_total', 0)}"
+                )
+                if self.task_stats_label.text() != sent_text:
+                    self.task_stats_label.setText(sent_text)
+
             # 刷新任务倒计时
             self.refresh_task_countdowns()
 
@@ -2013,12 +2294,14 @@ class MainWindow(QMainWindow):
                 break
             status_text = "激活" if task.is_active else "禁用"
             if task.is_active:
-                if task.next_run_at is not None:
+                if not self.discord_manager.posting_repeat_enabled and getattr(task, "sent_count", 0) > 0:
+                    status_text = "已发送"
+                elif task.next_run_at is not None:
                     remaining = max(0, int(task.next_run_at - now))
                     status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
                 else:
                     status_text = "激活 | 待发送"
-            status_item = self.posting_tasks_table.item(row, 3)
+            status_item = self.posting_tasks_table.item(row, 4)
             if status_item:
                 status_item.setText(status_text)
 
@@ -2027,7 +2310,9 @@ class MainWindow(QMainWindow):
                 break
             status_text = "激活" if task.is_active else "禁用"
             if task.is_active:
-                if task.next_run_at is not None:
+                if not self.discord_manager.comment_repeat_enabled and getattr(task, "sent_count", 0) > 0:
+                    status_text = "已发送"
+                elif task.next_run_at is not None:
                     remaining = max(0, int(task.next_run_at - now))
                     status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
                 else:
@@ -2035,6 +2320,40 @@ class MainWindow(QMainWindow):
             status_item = self.comment_tasks_table.item(row, 3)
             if status_item:
                 status_item.setText(status_text)
+
+        self.refresh_start_countdowns(now)
+
+    def refresh_start_countdowns(self, now=None):
+        """刷新启动倒计时显示"""
+        if now is None:
+            now = time.time()
+
+        if hasattr(self, 'posting_start_countdown_label'):
+            if not self.discord_manager.posting_enabled:
+                self.posting_start_countdown_label.setText("启动倒计时: 未启用")
+            elif self.discord_manager.posting_start_at and now < self.discord_manager.posting_start_at:
+                remaining = max(0, int(self.discord_manager.posting_start_at - now))
+                self.posting_start_countdown_label.setText(f"启动倒计时: {remaining}秒")
+            else:
+                self.posting_start_countdown_label.setText("启动倒计时: 已启动")
+
+        if hasattr(self, 'comment_start_countdown_label'):
+            if not self.discord_manager.comment_enabled:
+                self.comment_start_countdown_label.setText("启动倒计时: 未启用")
+            elif self.discord_manager.comment_start_at and now < self.discord_manager.comment_start_at:
+                remaining = max(0, int(self.discord_manager.comment_start_at - now))
+                self.comment_start_countdown_label.setText(f"启动倒计时: {remaining}秒")
+            else:
+                self.comment_start_countdown_label.setText("启动倒计时: 已启动")
+
+        if hasattr(self, 'reply_start_countdown_label'):
+            if not self.discord_manager.reply_enabled:
+                self.reply_start_countdown_label.setText("启动倒计时: 未启用")
+            elif self.discord_manager.reply_start_at and now < self.discord_manager.reply_start_at:
+                remaining = max(0, int(self.discord_manager.reply_start_at - now))
+                self.reply_start_countdown_label.setText(f"启动倒计时: {remaining}秒")
+            else:
+                self.reply_start_countdown_label.setText("启动倒计时: 已启动")
 
     def show_accounts_context_menu(self, position):
         """显示账号右键菜单"""
@@ -2061,12 +2380,12 @@ class MainWindow(QMainWindow):
         if len(selected_rows) == 1:
             current_row = list(selected_rows)[0]
             if action == edit_action:
-                token_item = self.accounts_table.item(current_row, 0)
+                token_item = self.accounts_table.item(current_row, 1)
                 if token_item:
                     token = token_item.data(Qt.ItemDataRole.UserRole)
-                    self.edit_account_by_alias(token)  # 使用alias方法，因为token作为alias存储
+                    self.edit_account_by_token(token)
             elif action == delete_action:
-                token_item = self.accounts_table.item(current_row, 0)
+                token_item = self.accounts_table.item(current_row, 1)
                 if token_item:
                     token = token_item.data(Qt.ItemDataRole.UserRole)
                     self.remove_account_by_token(token)
@@ -2113,12 +2432,12 @@ class MainWindow(QMainWindow):
             data = dialog.get_account_data()
 
             if not data['token']:
-                QMessageBox.warning(self, "错误", "Token不能为空")
+                QMessageBox.warning(self, "错误", "账号不能为空")
                 return
 
-            # 检查Token是否重复
+            # 检查账号是否重复
             if any(acc.token == data['token'] for acc in self.discord_manager.accounts):
-                QMessageBox.warning(self, "错误", "该Token已存在")
+                QMessageBox.warning(self, "错误", "该账号已存在")
                 return
 
             # 使用异步方法添加账号
@@ -2152,9 +2471,156 @@ class MainWindow(QMainWindow):
                 self.add_log(error_msg, "error")
                 QMessageBox.critical(self, "错误", error_msg)
 
-    def edit_account_by_alias(self, alias):
-        """通过别名编辑账号"""
-        account = next((acc for acc in self.discord_manager.accounts if acc.alias == alias), None)
+    def bulk_import_accounts(self):
+        """批量导入账号"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("一键导入账号")
+        dialog.setModal(True)
+        dialog.resize(600, 420)
+
+        layout = QVBoxLayout(dialog)
+
+        tips_label = QLabel("一次粘贴多个账号：支持换行 / 空格 / 逗号 / 分号分隔")
+        tips_label.setStyleSheet("color: #555;")
+        layout.addWidget(tips_label)
+
+        text_edit = QTextEdit()
+        text_edit.setPlaceholderText("在此粘贴账号列表…")
+        layout.addWidget(text_edit)
+
+        options_layout = QHBoxLayout()
+        validate_checkbox = QCheckBox("导入时验证账号（较慢）")
+        validate_checkbox.setChecked(False)
+        options_layout.addWidget(validate_checkbox)
+        options_layout.addStretch()
+        layout.addLayout(options_layout)
+
+        progress_label = QLabel("")
+        layout.addWidget(progress_label)
+
+        progress_bar = QProgressBar()
+        progress_bar.setVisible(False)
+        layout.addWidget(progress_bar)
+
+        button_layout = QHBoxLayout()
+        paste_btn = QPushButton("从剪贴板粘贴")
+        button_layout.addWidget(paste_btn)
+        button_layout.addStretch()
+        import_btn = QPushButton("开始导入")
+        cancel_btn = QPushButton("取消")
+        button_layout.addWidget(import_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+
+        def paste_from_clipboard():
+            clipboard_text = QApplication.clipboard().text().strip()
+            if clipboard_text:
+                text_edit.setPlainText(clipboard_text)
+
+        def parse_tokens(raw_text: str) -> List[str]:
+            import re
+            parts = re.split(r"[\\s,;]+", raw_text.strip())
+            tokens = [p.strip() for p in parts if p.strip()]
+            # 去重且保持顺序
+            seen = set()
+            ordered = []
+            for t in tokens:
+                if t not in seen:
+                    seen.add(t)
+                    ordered.append(t)
+            return ordered
+
+        def do_import():
+            raw_text = text_edit.toPlainText()
+            tokens = parse_tokens(raw_text)
+            if not tokens:
+                QMessageBox.information(dialog, "提示", "未检测到可导入的账号")
+                return
+
+            existing_tokens = {acc.token for acc in self.discord_manager.accounts}
+            tokens_to_add = [t for t in tokens if t not in existing_tokens]
+
+            if not tokens_to_add:
+                QMessageBox.information(dialog, "提示", "这些账号已经全部存在，无需重复导入")
+                return
+
+            validate_now = validate_checkbox.isChecked()
+
+            success_count = 0
+            skip_count = len(tokens) - len(tokens_to_add)
+            fail_count = 0
+
+            if validate_now:
+                progress_bar.setVisible(True)
+                progress_bar.setMinimum(0)
+                progress_bar.setMaximum(len(tokens_to_add))
+
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                try:
+                    for idx, token in enumerate(tokens_to_add, start=1):
+                        progress_label.setText(f"正在验证并导入账号 {idx}/{len(tokens_to_add)} ...")
+                        QApplication.processEvents()
+                        success, message = loop.run_until_complete(self.discord_manager.add_account_async(token))
+                        if success:
+                            success_count += 1
+                        else:
+                            fail_count += 1
+                            self.add_log(f"账号导入失败: {message}", "error")
+                        progress_bar.setValue(idx)
+                finally:
+                    loop.close()
+            else:
+                for token in tokens_to_add:
+                    self.discord_manager.accounts.append(
+                        Account(
+                            token=token,
+                            is_active=True,
+                            is_valid=False,
+                            last_verified=None,
+                            user_info=None
+                        )
+                    )
+                    success_count += 1
+
+            self.update_accounts_list()
+            self.save_config()
+
+            QMessageBox.information(
+                dialog, "导入完成",
+                f"导入完成\n成功: {success_count}\n跳过重复: {skip_count}\n失败: {fail_count}"
+            )
+            dialog.accept()
+
+        paste_btn.clicked.connect(paste_from_clipboard)
+        import_btn.clicked.connect(do_import)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        dialog.exec()
+
+    def clear_all_accounts(self):
+        """一键删除所有账号"""
+        if not self.discord_manager.accounts:
+            QMessageBox.information(self, "提示", "当前没有账号可删除")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除全部账号吗？此操作无法撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.discord_manager.accounts.clear()
+            self.update_accounts_list()
+            self.save_config()
+            self.add_log("已删除全部账号", "info")
+
+    def edit_account_by_token(self, token):
+        """通过账号标识编辑账号"""
+        account = next((acc for acc in self.discord_manager.accounts if acc.token == token), None)
         if not account:
             QMessageBox.warning(self, "错误", "账号不存在")
             return
@@ -2164,12 +2630,12 @@ class MainWindow(QMainWindow):
             data = dialog.get_account_data()
 
             if not data['token']:
-                QMessageBox.warning(self, "错误", "Token不能为空")
+                QMessageBox.warning(self, "错误", "账号不能为空")
                 return
 
-            # 检查Token是否重复（排除当前账号）
-            if data['token'] != alias and any(acc.token == data['token'] for acc in self.discord_manager.accounts):
-                QMessageBox.warning(self, "错误", "该Token已存在")
+            # 检查账号是否重复（排除当前账号）
+            if data['token'] != token and any(acc.token == data['token'] for acc in self.discord_manager.accounts):
+                QMessageBox.warning(self, "错误", "该账号已存在")
                 return
 
             # 更新账号信息
@@ -2182,6 +2648,14 @@ class MainWindow(QMainWindow):
             self.update_accounts_list()
             self.save_config()
             QMessageBox.information(self, "成功", "账号编辑成功")
+
+    def edit_account_by_alias(self, alias):
+        """通过别名编辑账号（兼容旧调用）"""
+        account = next((acc for acc in self.discord_manager.accounts if acc.alias == alias), None)
+        if not account:
+            QMessageBox.warning(self, "错误", "账号不存在")
+            return
+        self.edit_account_by_token(account.token)
 
 
     def apply_global_reply_accounts(self):
@@ -2210,23 +2684,42 @@ class MainWindow(QMainWindow):
         current_index = self.posting_accounts_combo.currentIndex()
 
         if current_index == 0:
-            # 随机使用所有账号 - 不设置特定账号
-            # 发帖任务本身没有account_ids字段，所以这里是提示用户
-            QMessageBox.information(self, "提示", "发帖任务使用轮换逻辑，随机选择可用账号")
+            # 随机使用所有账号
+            self.discord_manager.posting_account_tokens = []
+            self.save_config()
+            QMessageBox.information(self, "提示", "发帖任务将随机使用所有可用账号")
         else:
-            # 这里可以设置发帖的账号偏好，但由于发帖使用轮换逻辑，暂时只显示提示
-            QMessageBox.information(self, "提示", "发帖任务使用轮换逻辑，已设置为优先使用指定账号")
+            # 仅使用指定账号
+            selected_account_index = current_index - 1
+            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+            if selected_account_index < len(valid_accounts):
+                selected_account = valid_accounts[selected_account_index]
+                self.discord_manager.posting_account_tokens = [selected_account.token]
+                self.save_config()
+                QMessageBox.information(self, "提示", f"发帖任务仅使用账号：{selected_account.alias}")
+            else:
+                QMessageBox.information(self, "提示", "未找到可用账号，请先验证账号")
 
     def apply_global_comment_accounts(self):
         """应用全局账号设置到所有评论任务"""
         current_index = self.comment_accounts_combo.currentIndex()
 
         if current_index == 0:
-            # 随机使用所有账号 - 不设置特定账号
-            QMessageBox.information(self, "提示", "评论任务使用轮换逻辑，随机选择可用账号")
+            # 随机使用所有账号
+            self.discord_manager.comment_account_tokens = []
+            self.save_config()
+            QMessageBox.information(self, "提示", "评论任务将随机使用所有可用账号")
         else:
-            # 这里可以设置评论的账号偏好，但由于评论使用轮换逻辑，暂时只显示提示
-            QMessageBox.information(self, "提示", "评论任务使用轮换逻辑，已设置为优先使用指定账号")
+            # 仅使用指定账号
+            selected_account_index = current_index - 1
+            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+            if selected_account_index < len(valid_accounts):
+                selected_account = valid_accounts[selected_account_index]
+                self.discord_manager.comment_account_tokens = [selected_account.token]
+                self.save_config()
+                QMessageBox.information(self, "提示", f"评论任务仅使用账号：{selected_account.alias}")
+            else:
+                QMessageBox.information(self, "提示", "未找到可用账号，请先验证账号")
 
     def revalidate_all_accounts(self):
         """重新验证所有账号"""
@@ -2234,7 +2727,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "没有账号需要验证")
             return
 
-        self.add_log("开始重新验证所有账号的Token", "info")
+            self.add_log("开始重新验证所有账号", "info")
 
         # 在新的事件循环中运行异步验证
         import asyncio
@@ -2281,11 +2774,11 @@ class MainWindow(QMainWindow):
             self.add_log(error_msg, "error")
             QMessageBox.critical(self, "验证错误", error_msg)
 
-    def revalidate_account_by_alias(self, alias):
-        """重新验证账号Token"""
-        account = next((acc for acc in self.discord_manager.accounts if acc.alias == alias), None)
+    def revalidate_account_by_token(self, token):
+        """重新验证账号"""
+        account = next((acc for acc in self.discord_manager.accounts if acc.token == token), None)
         if account:
-            self.add_log(f"正在重新验证账号 '{account.alias}' 的Token", "info")
+            self.add_log(f"正在重新验证账号 '{account.alias}'", "info")
         else:
             self.add_log("账号不存在", "error")
             return
@@ -2316,6 +2809,14 @@ class MainWindow(QMainWindow):
             self.add_log(error_msg, "error")
             QMessageBox.critical(self, "验证错误", error_msg)
 
+    def revalidate_account_by_alias(self, alias):
+        """通过别名重新验证账号（兼容旧调用）"""
+        account = next((acc for acc in self.discord_manager.accounts if acc.alias == alias), None)
+        if not account:
+            self.add_log("账号不存在", "error")
+            return
+        self.revalidate_account_by_token(account.token)
+
     def remove_account_by_token(self, token):
         """通过token删除账号"""
         account = next((acc for acc in self.discord_manager.accounts if acc.token == token), None)
@@ -2337,6 +2838,10 @@ class MainWindow(QMainWindow):
 
     def remove_account_by_alias(self, alias):
         """通过别名删除账号"""
+        account = next((acc for acc in self.discord_manager.accounts if acc.alias == alias), None)
+        if not account:
+            QMessageBox.warning(self, "错误", "账号不存在")
+            return
         reply = QMessageBox.question(
             self, "确认删除",
             f"确定要删除账号 '{alias}' 吗？",
@@ -2344,7 +2849,7 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            self.discord_manager.remove_account(alias)
+            self.discord_manager.remove_account(account.token)
             self.update_accounts_list()
             self.save_config()
 
@@ -2500,8 +3005,8 @@ class MainWindow(QMainWindow):
         # 检查是否有有效的账号
         valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
         if not valid_accounts:
-            self.add_log("❌ 启动失败：没有有效的账号（请先验证Token）", "error")
-            QMessageBox.warning(self, "错误", "没有有效的账号，请先验证Token")
+            self.add_log("❌ 启动失败：没有有效的账号（请先验证账号）", "error")
+            QMessageBox.warning(self, "错误", "没有有效的账号，请先验证账号")
             return
 
         try:
@@ -2864,11 +3369,20 @@ class MainWindow(QMainWindow):
         """切换自动回复功能"""
         is_checked = self.reply_toggle_button.isChecked()
         self.discord_manager.reply_enabled = is_checked
+        if is_checked:
+            delay = max(0, getattr(self.discord_manager, "reply_start_delay", 0))
+            self.discord_manager.reply_start_at = time.time() + delay if delay > 0 else None
+        else:
+            self.discord_manager.reply_start_at = None
         self.save_config()
 
         if is_checked:
             self.reply_toggle_button.setText("📝 自动回复: 开启")
-            self.add_log("自动回复已开启", "info")
+            if self.discord_manager.reply_start_at:
+                remaining = int(self.discord_manager.reply_start_at - time.time())
+                self.add_log(f"自动回复已开启，将在 {max(0, remaining)} 秒后启动", "info")
+            else:
+                self.add_log("自动回复已开启", "info")
         else:
             self.reply_toggle_button.setText("📝 自动回复: 关闭")
             self.add_log("自动回复已关闭", "info")
@@ -2879,6 +3393,11 @@ class MainWindow(QMainWindow):
         # 发帖间隔始终可用，让用户可以预设参数
         # self.posting_interval_spin.setEnabled(is_checked)
         self.discord_manager.posting_enabled = is_checked
+        if is_checked:
+            delay = max(0, getattr(self.discord_manager, "posting_start_delay", 0))
+            self.discord_manager.posting_start_at = time.time() + delay if delay > 0 else None
+        else:
+            self.discord_manager.posting_start_at = None
         self.save_config()
 
         if is_checked:
@@ -2887,7 +3406,11 @@ class MainWindow(QMainWindow):
                     task.next_run_at = None
             self.discord_manager.posting_task_cursor = 0
             self.posting_toggle_button.setText("📄 自动发帖: 开启")
-            self.add_log("自动发帖已启用", "info")
+            if self.discord_manager.posting_start_at:
+                remaining = int(self.discord_manager.posting_start_at - time.time())
+                self.add_log(f"自动发帖已启用，将在 {max(0, remaining)} 秒后启动", "info")
+            else:
+                self.add_log("自动发帖已启用", "info")
             # 如果机器人正在运行，启动发帖调度器
             if self.discord_manager.is_running:
                 import asyncio
@@ -2903,6 +3426,11 @@ class MainWindow(QMainWindow):
         # 评论间隔始终可用，让用户可以预设参数
         # self.comment_interval_spin.setEnabled(is_checked)
         self.discord_manager.comment_enabled = is_checked
+        if is_checked:
+            delay = max(0, getattr(self.discord_manager, "comment_start_delay", 0))
+            self.discord_manager.comment_start_at = time.time() + delay if delay > 0 else None
+        else:
+            self.discord_manager.comment_start_at = None
         self.save_config()
 
         if is_checked:
@@ -2911,7 +3439,11 @@ class MainWindow(QMainWindow):
                     task.next_run_at = None
             self.discord_manager.comment_task_cursor = 0
             self.comment_toggle_button.setText("💬 自动评论: 开启")
-            self.add_log("自动评论已启用", "info")
+            if self.discord_manager.comment_start_at:
+                remaining = int(self.discord_manager.comment_start_at - time.time())
+                self.add_log(f"自动评论已启用，将在 {max(0, remaining)} 秒后启动", "info")
+            else:
+                self.add_log("自动评论已启用", "info")
             # 如果机器人正在运行，启动评论调度器
             if self.discord_manager.is_running:
                 import asyncio
@@ -2928,6 +3460,11 @@ class MainWindow(QMainWindow):
         enabled = state == Qt.CheckState.Checked
         self.posting_interval_spin.setEnabled(enabled)
         self.discord_manager.posting_enabled = enabled
+        if enabled:
+            delay = max(0, getattr(self.discord_manager, "posting_start_delay", 0))
+            self.discord_manager.posting_start_at = time.time() + delay if delay > 0 else None
+        else:
+            self.discord_manager.posting_start_at = None
         # 同步更新按钮状态
         self.posting_toggle_button.setChecked(enabled)
         if enabled:
@@ -3327,6 +3864,8 @@ class MainWindow(QMainWindow):
                 task.image_path = data['image_path']
                 task.tags = data.get('tags') or []
                 task.delay_seconds = 0  # 保持为0，使用全局间隔
+                task.sent_count = 0
+                task.next_run_at = None
 
                 # 更新UI
                 self.update_posting_tasks_list()
@@ -3369,6 +3908,8 @@ class MainWindow(QMainWindow):
                 task.content = data['content']
                 task.image_path = data['image_path']
                 task.delay_seconds = 0  # 保持为0，使用全局间隔
+                task.sent_count = 0
+                task.next_run_at = None
 
                 # 更新UI
                 self.update_comment_tasks_list()
@@ -3382,19 +3923,28 @@ class MainWindow(QMainWindow):
         """更新发帖任务列表"""
         self.posting_tasks_table.setRowCount(len(self.discord_manager.posting_tasks))
         for row, task in enumerate(self.discord_manager.posting_tasks):
-            content_item = QTableWidgetItem(task.content[:50] + "..." if len(task.content) > 50 else task.content)
-            content_item.setData(Qt.ItemDataRole.UserRole, task.id)  # 存储任务ID
-            self.posting_tasks_table.setItem(row, 0, content_item)
-            self.posting_tasks_table.setItem(row, 1, QTableWidgetItem(str(task.channel_id)))
-            self.posting_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
+            title_text = task.title or "无标题"
+            title_item = QTableWidgetItem(title_text)
+            title_item.setData(Qt.ItemDataRole.UserRole, task.id)  # 存储任务ID
+            self.posting_tasks_table.setItem(row, 0, title_item)
+
+            content_preview = task.content[:50] + "..." if len(task.content) > 50 else task.content
+            content_item = QTableWidgetItem(content_preview)
+            self.posting_tasks_table.setItem(row, 1, content_item)
+
+            self.posting_tasks_table.setItem(row, 2, QTableWidgetItem(str(task.channel_id)))
+            self.posting_tasks_table.setItem(row, 3, QTableWidgetItem(task.image_path or "无"))
+
             status_text = "激活" if task.is_active else "禁用"
             if task.is_active:
-                if task.next_run_at is not None:
+                if not self.discord_manager.posting_repeat_enabled and getattr(task, "sent_count", 0) > 0:
+                    status_text = "已发送"
+                elif task.next_run_at is not None:
                     remaining = max(0, int(task.next_run_at - time.time()))
                     status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
                 else:
                     status_text = "激活 | 待发送"
-            self.posting_tasks_table.setItem(row, 3, QTableWidgetItem(status_text))
+            self.posting_tasks_table.setItem(row, 4, QTableWidgetItem(status_text))
 
             # 创建操作按钮
             action_widget = QWidget()
@@ -3414,7 +3964,7 @@ class MainWindow(QMainWindow):
             action_layout.addWidget(delete_btn)
             action_layout.addStretch()
 
-            self.posting_tasks_table.setCellWidget(row, 4, action_widget)
+            self.posting_tasks_table.setCellWidget(row, 5, action_widget)
 
     # ============ 评论功能 ============
 
@@ -3423,6 +3973,11 @@ class MainWindow(QMainWindow):
         enabled = state == Qt.CheckState.Checked
         self.comment_interval_spin.setEnabled(enabled)
         self.discord_manager.comment_enabled = enabled
+        if enabled:
+            delay = max(0, getattr(self.discord_manager, "comment_start_delay", 0))
+            self.discord_manager.comment_start_at = time.time() + delay if delay > 0 else None
+        else:
+            self.discord_manager.comment_start_at = None
         # 同步更新按钮状态
         self.comment_toggle_button.setChecked(enabled)
         if enabled:
@@ -3500,6 +4055,13 @@ class MainWindow(QMainWindow):
         self.discord_manager.posting_interval = value
         self.save_config()
 
+    def on_posting_start_delay_changed(self, value=None):
+        """发帖启动倒计时改变"""
+        if value is None:
+            value = self.posting_start_delay_spin.value()
+        self.discord_manager.posting_start_delay = value
+        self.save_config()
+
     def on_posting_repeat_enabled_changed(self, state):
         """发帖循环发送开关"""
         enabled = state == Qt.CheckState.Checked
@@ -3558,6 +4120,20 @@ class MainWindow(QMainWindow):
         self.discord_manager.comment_interval = value
         self.save_config()
 
+    def on_comment_start_delay_changed(self, value=None):
+        """评论启动倒计时改变"""
+        if value is None:
+            value = self.comment_start_delay_spin.value()
+        self.discord_manager.comment_start_delay = value
+        self.save_config()
+
+    def on_reply_start_delay_changed(self, value=None):
+        """自动回复启动倒计时改变"""
+        if value is None:
+            value = self.reply_start_delay_spin.value()
+        self.discord_manager.reply_start_delay = value
+        self.save_config()
+
     def on_comment_repeat_enabled_changed(self, state):
         """循环评论任务开关"""
         enabled = state == Qt.CheckState.Checked
@@ -3586,7 +4162,9 @@ class MainWindow(QMainWindow):
             self.comment_tasks_table.setItem(row, 2, QTableWidgetItem(task.image_path or "无"))
             status_text = "激活" if task.is_active else "禁用"
             if task.is_active:
-                if task.next_run_at is not None:
+                if not self.discord_manager.comment_repeat_enabled and getattr(task, "sent_count", 0) > 0:
+                    status_text = "已发送"
+                elif task.next_run_at is not None:
                     remaining = max(0, int(task.next_run_at - time.time()))
                     status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
                 else:

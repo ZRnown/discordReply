@@ -26,7 +26,7 @@ class MatchType(Enum):
 class Account:
     token: str
     is_active: bool = True
-    is_valid: bool = False  # Token验证状态
+    is_valid: bool = False  # 账号验证状态
     last_verified: Optional[float] = None  # 最后验证时间
     user_info: Optional[Dict] = None  # 用户信息
     last_sent_time: Optional[float] = None  # 最后发送消息时间
@@ -37,7 +37,7 @@ class Account:
         """获取账号别名（使用用户名）"""
         if self.user_info and isinstance(self.user_info, dict):
             return f"{self.user_info.get('name', 'Unknown')}#{self.user_info.get('discriminator', '0000')}"
-        return f"Token-{self.token[:8]}..."
+        return f"账号-{self.token[:8]}..."
 
 
 @dataclass
@@ -53,6 +53,8 @@ class PostingTask:
     created_at: Optional[float] = None  # 创建时间
     tags: Optional[List[str]] = None  # 论坛标签（可选，名称或ID）
     next_run_at: Optional[float] = None  # 下次执行时间戳
+    sent_count: int = 0  # 已发送次数（用于单次发送控制）
+    last_sent_at: Optional[float] = None  # 最近发送时间
 
     def __post_init__(self):
         # 只有当created_at为None时才设置当前时间
@@ -63,6 +65,8 @@ class PostingTask:
             self.tags = []
         if self.next_run_at is None and self.delay_seconds > 0:
             self.next_run_at = self.created_at + self.delay_seconds
+        if self.sent_count is None:
+            self.sent_count = 0
 
 
 @dataclass
@@ -76,6 +80,8 @@ class CommentTask:
     is_active: bool = True  # 是否激活
     created_at: Optional[float] = None  # 创建时间
     next_run_at: Optional[float] = None  # 下次执行时间戳
+    sent_count: int = 0  # 已发送次数（用于单次发送控制）
+    last_sent_at: Optional[float] = None  # 最近发送时间
 
     def __post_init__(self):
         # 只有当created_at为None时才设置当前时间
@@ -84,6 +90,8 @@ class CommentTask:
             self.created_at = time.time()
         if self.next_run_at is None and self.delay_seconds > 0:
             self.next_run_at = self.created_at + self.delay_seconds
+        if self.sent_count is None:
+            self.sent_count = 0
 
 
 @dataclass
@@ -208,6 +216,11 @@ class AutoReplyClient(discord.Client):
         if not self.discord_manager.reply_enabled:
             return
 
+        # 启动倒计时未结束则不回复
+        if (self.discord_manager.reply_start_at is not None and
+                time.time() < self.discord_manager.reply_start_at):
+            return
+
         if self.log_callback:
             self.log_callback(f"📨 收到消息: '{message.content}' 来自 {message.author.name}#{message.author.discriminator}")
 
@@ -264,13 +277,15 @@ class AutoReplyClient(discord.Client):
                         await asyncio.sleep(delay)
 
                     # 检查是否启用轮换模式
-                    if (self.discord_manager and
-                        self.discord_manager.rotation_enabled and
-                        rule.target_channels and
-                        message.channel.id in rule.target_channels):
+                    if (self.discord_manager and self.discord_manager.rotation_enabled):
                         # 使用轮换模式
+                        allowed_tokens = set(rule.account_ids) if rule.account_ids else None
                         success = await self.discord_manager.send_rotated_reply(
-                            message, rule.reply, rule.keywords[0] if rule.keywords else ""
+                            message,
+                            rule.reply,
+                            rule.keywords[0] if rule.keywords else "",
+                            image_path=rule.image_path,
+                            allowed_tokens=allowed_tokens
                         )
                         if success:
                             success_msg = f"[{self.account.alias}] ✅ 轮换回复成功"
@@ -290,6 +305,8 @@ class AutoReplyClient(discord.Client):
                             print(success_msg)
                             if self.log_callback:
                                 self.log_callback(success_msg)
+                            if self.discord_manager:
+                                self.discord_manager.reply_sent_total += 1
                         else:
                             error_msg = f"[{self.account.alias}] ❌ 回复失败"
                             print(error_msg)
@@ -353,7 +370,7 @@ class AutoReplyClient(discord.Client):
                 await self.close()
 
         except discord.LoginFailure as e:
-            error_msg = f"[{self.account.alias}] 登录失败: Token无效 - {e}"
+            error_msg = f"[{self.account.alias}] 登录失败: 账号无效 - {e}"
             print(error_msg)
             if self.log_callback:
                 self.log_callback(error_msg)
@@ -382,7 +399,7 @@ class TokenValidator:
     async def validate_token(token: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
         token = token.strip()
         if not token:
-            return False, None, "Token为空"
+            return False, None, "账号为空"
 
         # 1. 先尝试 HTTP 验证 (更稳)
         try:
@@ -398,7 +415,7 @@ class TokenValidator:
             ws_res = await TokenValidator._validate_token_websocket(token)
             return ws_res
         except Exception as e:
-            return False, None, "所有验证方法都失败，请检查Token和网络连接"
+            return False, None, "所有验证方法都失败，请检查账号和网络连接"
 
     @staticmethod
     def _detect_token_type(token: str) -> str:
@@ -411,7 +428,7 @@ class TokenValidator:
     async def _validate_token_http(token: str) -> Tuple[Optional[bool], Optional[Dict], Optional[str]]:
         import aiohttp
         token = token.strip()
-        if not token: return False, None, "Token为空"
+        if not token: return False, None, "账号为空"
 
         headers = {'Authorization': token, 'User-Agent': 'DiscordBot/1.0'}
         timeout = aiohttp.ClientTimeout(total=10)  # 设置10秒超时
@@ -435,9 +452,9 @@ class TokenValidator:
                         except Exception as json_error:
                             return False, None, f"解析响应失败: {str(json_error)}"
                     elif resp.status == 401:
-                        return False, None, "Token无效"
+                        return False, None, "账号无效"
                     elif resp.status == 403:
-                        return False, None, "Token权限不足"
+                        return False, None, "账号权限不足"
                     elif resp.status == 429:
                         return False, None, "请求过于频繁，请稍后再试"
                     else:
@@ -502,7 +519,7 @@ class TokenValidator:
         except asyncio.TimeoutError:
             return False, None, "WebSocket连接超时"
         except discord.LoginFailure:
-            return False, None, "Token登录失败"
+            return False, None, "账号登录失败"
         except Exception as e:
             error_msg = str(e)
             # 简化错误信息，避免返回复杂的内部错误
@@ -552,6 +569,17 @@ class DiscordManager:
         self.comment_link_interval: int = 5  # 评论多链接间隔（秒）
         self.default_posting_channel_id: Optional[int] = None  # 默认发帖频道
         self.default_posting_tags: List[str] = []  # 默认发帖标签
+        self.posting_start_delay: int = 0  # 发帖启动倒计时（秒）
+        self.comment_start_delay: int = 0  # 评论启动倒计时（秒）
+        self.reply_start_delay: int = 0  # 自动回复启动倒计时（秒）
+        self.posting_start_at: Optional[float] = None  # 发帖启动时间戳
+        self.comment_start_at: Optional[float] = None  # 评论启动时间戳
+        self.reply_start_at: Optional[float] = None  # 回复启动时间戳
+        self.posting_account_tokens: List[str] = []  # 发帖账号选择（空=所有）
+        self.comment_account_tokens: List[str] = []  # 评论账号选择（空=所有）
+        self.posting_sent_total: int = 0  # 发帖发送总数
+        self.comment_sent_total: int = 0  # 评论发送总数（按链接）
+        self.reply_sent_total: int = 0  # 回复发送总数
         self.posting_task_cursor: int = 0  # 发帖任务轮询索引
         self.comment_task_cursor: int = 0  # 评论任务轮询索引
         self.current_posting_index: int = 0  # 当前发帖账号索引
@@ -575,7 +603,7 @@ class DiscordManager:
 
     async def add_account_async(self, token: str) -> Tuple[bool, Optional[str]]:
         if any(acc.token == token for acc in self.accounts):
-            return False, "Token已存在"
+            return False, "账号已存在"
 
         is_valid, user_info, msg = await self.validator.validate_token(token)
 
@@ -674,7 +702,7 @@ class DiscordManager:
         self.clients.clear()
 
     async def revalidate_all_accounts(self) -> List[Dict]:
-        """重新验证所有账号的Token"""
+        """重新验证所有账号"""
         results = []
 
         for account in self.accounts:
@@ -694,13 +722,15 @@ class DiscordManager:
 
         return results
 
-    def get_next_available_account(self) -> Optional[Account]:
+    def get_next_available_account(self, allowed_tokens: Optional[Set[str]] = None) -> Optional[Account]:
         """获取下一个可用的账号（用于轮换）"""
         if not self.rotation_enabled or not self.accounts:
             return None
 
         # 查找所有有效的活跃账号
         available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
+        if allowed_tokens:
+            available_accounts = [acc for acc in available_accounts if acc.token in allowed_tokens]
 
         if not available_accounts:
             return None
@@ -726,7 +756,9 @@ class DiscordManager:
         # 如果所有账号都被限制，返回None
         return None
 
-    async def send_rotated_reply(self, message, reply_text: str, rule_name: str = "") -> bool:
+    async def send_rotated_reply(self, message, reply_text: str, rule_name: str = "",
+                                 image_path: Optional[str] = None,
+                                 allowed_tokens: Optional[Set[str]] = None) -> bool:
         """使用轮换账号发送回复"""
         if not self.rotation_enabled:
             return False
@@ -737,7 +769,7 @@ class DiscordManager:
                 self.log_callback(f"⚠️ 消息 {message.id} 已被回复，跳过轮换回复")
             return False
 
-        account = self.get_next_available_account()
+        account = self.get_next_available_account(allowed_tokens)
         if not account:
             if self.log_callback:
                 self.log_callback(f"❌ 所有账号都被频率限制，无法发送回复")
@@ -766,16 +798,53 @@ class DiscordManager:
             current_time = time.time()
             account.last_sent_time = current_time
 
-            # 发送消息
-            await message.reply(reply_text)
+            # 使用目标账号客户端发送
+            client = next((c for c in self.clients if c.account.token == account.token), None)
+            if not client:
+                if self.log_callback:
+                    self.log_callback(f"❌ 找不到账号 {account.alias} 的客户端")
+                return False
+            if not client.is_running:
+                if self.log_callback:
+                    self.log_callback(f"⏳ 客户端 {account.alias} 尚未登录完成，跳过轮换回复")
+                return False
 
-            # 移动到下一个账号
+            channel = client.get_channel(message.channel.id)
+            if not channel:
+                channel = await client.fetch_channel(message.channel.id)
+            target_message = await channel.fetch_message(message.id)
+
+            # 发送消息（支持图片）
+            image_paths = []
+            if image_path:
+                separators = [';', ',']
+                for sep in separators:
+                    if sep in image_path:
+                        image_paths = [path.strip() for path in image_path.split(sep) if path.strip()]
+                        break
+                else:
+                    image_paths = [image_path]
+                image_paths = [path for path in image_paths if os.path.exists(path)]
+
+            if image_paths:
+                files = [discord.File(path) for path in image_paths]
+                if reply_text.strip():
+                    await target_message.reply(reply_text, files=files)
+                else:
+                    await target_message.reply(files=files)
+            else:
+                await target_message.reply(reply_text)
+
+            # 移动到下一个账号（基于允许账号池）
             available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
+            if allowed_tokens:
+                available_accounts = [acc for acc in available_accounts if acc.token in allowed_tokens]
             if available_accounts:
                 self.current_rotation_index = (self.current_rotation_index + 1) % len(available_accounts)
 
             if self.log_callback:
                 self.log_callback(f"✅ [{account.alias}] 轮换回复成功: '{reply_text[:50]}...'")
+            self.reply_sent_total += 1
 
             return True
 
@@ -793,7 +862,7 @@ class DiscordManager:
                     self.log_callback(f"❌ [{account.alias}] 发送失败: HTTP {e.code}")
 
             # 尝试下一个账号
-            return await self.send_rotated_reply(message, reply_text, rule_name)
+            return await self.send_rotated_reply(message, reply_text, rule_name, image_path=image_path, allowed_tokens=allowed_tokens)
 
         except Exception as e:
             if self.log_callback:
@@ -801,7 +870,7 @@ class DiscordManager:
             return False
 
     async def revalidate_account(self, token: str) -> Tuple[bool, Optional[str]]:
-        """重新验证指定账号的Token"""
+        """重新验证指定账号"""
         account = next((acc for acc in self.accounts if acc.token == token), None)
         if not account:
             return False, "账号不存在"
@@ -833,7 +902,10 @@ class DiscordManager:
                 for acc in self.accounts
             ],
             "rules_count": len(self.rules),
-            "active_rules": len([r for r in self.rules if r.is_active])
+            "active_rules": len([r for r in self.rules if r.is_active]),
+            "posting_sent_total": self.posting_sent_total,
+            "comment_sent_total": self.comment_sent_total,
+            "reply_sent_total": self.reply_sent_total
         }
 
     # ============ 发帖和评论功能 ============
@@ -914,6 +986,8 @@ class DiscordManager:
 
         # 获取下一个可用的账号
         available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
+        if self.posting_account_tokens:
+            available_accounts = [acc for acc in available_accounts if acc.token in self.posting_account_tokens]
         if not available_accounts:
             if self.log_callback:
                 self.log_callback("❌ 没有可用的账号用于发帖")
@@ -932,7 +1006,7 @@ class DiscordManager:
 
         account = available_accounts[self.current_posting_index % len(available_accounts)]
 
-        # 如果不是轮换模式，仍然正常轮换
+        # 未启用轮换时按顺序使用账号（或固定账号）
         if not self.posting_rotation_enabled:
             self.current_posting_index = (self.current_posting_index + 1) % len(available_accounts)
 
@@ -1055,6 +1129,9 @@ class DiscordManager:
                         thread_name = getattr(thread, 'name', None) or getattr(thread.thread, 'name', f'帖子-{task.id}')
                         self.log_callback(f"✅ [{account.alias}] 论坛发帖成功: 创建帖子 '{thread_name}'")
                     # 增加发帖计数
+                    task.sent_count += 1
+                    task.last_sent_at = time.time()
+                    self.posting_sent_total += 1
                     self.posting_count_since_rotation += 1
                     return True
                 except discord.HTTPException as e:
@@ -1088,6 +1165,9 @@ class DiscordManager:
                 await channel.send(send_content)
 
             # 增加发帖计数
+            task.sent_count += 1
+            task.last_sent_at = time.time()
+            self.posting_sent_total += 1
             self.posting_count_since_rotation += 1
 
             if self.log_callback:
@@ -1117,6 +1197,8 @@ class DiscordManager:
 
         # 获取下一个可用的账号
         available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
+        if self.comment_account_tokens:
+            available_accounts = [acc for acc in available_accounts if acc.token in self.comment_account_tokens]
         if not available_accounts:
             if self.log_callback:
                 self.log_callback("❌ 没有可用的账号用于评论")
@@ -1290,6 +1372,11 @@ class DiscordManager:
             if self.log_callback:
                 self.log_callback(f"✅ [{account.alias}] 成功发送 {success_count}/{len(links)} 条评论")
 
+            if success_count > 0:
+                task.sent_count += 1
+                task.last_sent_at = time.time()
+                self.comment_sent_total += success_count
+
             self.comment_count_since_rotation += 1
             return True
 
@@ -1345,10 +1432,27 @@ class DiscordManager:
                 task.next_run_at = None
         self.posting_task_cursor = 0
 
+        def get_active_posting_tasks():
+            tasks = [task for task in self.posting_tasks if task.is_active]
+            if not self.posting_repeat_enabled:
+                tasks = [task for task in tasks if task.sent_count == 0]
+            return tasks
+
+        if self.posting_start_at is None:
+            start_delay = max(0, self.posting_start_delay)
+            if start_delay > 0:
+                self.posting_start_at = time.time() + start_delay
+            else:
+                self.posting_start_at = None
+
+        active_tasks = get_active_posting_tasks()
+        if active_tasks and self.posting_start_at:
+            active_tasks[self.posting_task_cursor].next_run_at = self.posting_start_at
+
         while self.posting_enabled:
             try:
                 current_time = time.time()
-                active_tasks = [task for task in self.posting_tasks if task.is_active]
+                active_tasks = get_active_posting_tasks()
 
                 if not active_tasks:
                     await asyncio.sleep(2)
@@ -1381,22 +1485,26 @@ class DiscordManager:
                         self.posting_task_cursor = (current_index + 1) % len(active_tasks)
                         task.next_run_at = None
                         next_task = active_tasks[self.posting_task_cursor]
-                        next_task.next_run_at = time.time() + max(1, self.posting_interval)
+                        next_task.next_run_at = time.time() + max(0, self.posting_interval)
                     else:
-                        if task in self.posting_tasks:
-                            self.posting_tasks.remove(task)
-                        active_tasks = [t for t in self.posting_tasks if t.is_active]
-                        if active_tasks:
-                            if self.posting_task_cursor >= len(active_tasks):
-                                self.posting_task_cursor = 0
-                            next_task = active_tasks[self.posting_task_cursor]
-                            next_task.next_run_at = time.time() + max(1, self.posting_interval)
+                        task.next_run_at = None
+                        remaining_tasks = get_active_posting_tasks()
+                        if remaining_tasks:
+                            if task in active_tasks:
+                                current_index = active_tasks.index(task)
+                            else:
+                                current_index = self.posting_task_cursor
+                            if current_index >= len(remaining_tasks):
+                                current_index = 0
+                            self.posting_task_cursor = current_index
+                            next_task = remaining_tasks[self.posting_task_cursor]
+                            next_task.next_run_at = time.time() + max(0, self.posting_interval)
 
                     if self.log_callback:
                         self.log_callback(f"📝 发帖任务 {task.id} 执行成功")
                 else:
                     if task.next_run_at is None:
-                        task.next_run_at = time.time() + max(1, self.posting_interval)
+                        task.next_run_at = time.time() + max(0, self.posting_interval)
                     if self.log_callback:
                         self.log_callback(f"📝 发帖任务 {task.id} 执行失败")
 
@@ -1439,10 +1547,27 @@ class DiscordManager:
                 task.next_run_at = None
         self.comment_task_cursor = 0
 
+        def get_active_comment_tasks():
+            tasks = [task for task in self.comment_tasks if task.is_active]
+            if not self.comment_repeat_enabled:
+                tasks = [task for task in tasks if task.sent_count == 0]
+            return tasks
+
+        if self.comment_start_at is None:
+            start_delay = max(0, self.comment_start_delay)
+            if start_delay > 0:
+                self.comment_start_at = time.time() + start_delay
+            else:
+                self.comment_start_at = None
+
+        active_tasks = get_active_comment_tasks()
+        if active_tasks and self.comment_start_at:
+            active_tasks[self.comment_task_cursor].next_run_at = self.comment_start_at
+
         while self.comment_enabled:
             try:
                 current_time = time.time()
-                active_tasks = [task for task in self.comment_tasks if task.is_active]
+                active_tasks = get_active_comment_tasks()
 
                 if not active_tasks:
                     await asyncio.sleep(2)
@@ -1472,19 +1597,23 @@ class DiscordManager:
                         self.comment_task_cursor = (current_index + 1) % len(active_tasks)
                         task.next_run_at = None
                         next_task = active_tasks[self.comment_task_cursor]
-                        next_task.next_run_at = time.time() + max(1, self.comment_interval)
+                        next_task.next_run_at = time.time() + max(0, self.comment_interval)
                     else:
-                        if task in self.comment_tasks:
-                            self.comment_tasks.remove(task)
-                        active_tasks = [t for t in self.comment_tasks if t.is_active]
-                        if active_tasks:
-                            if self.comment_task_cursor >= len(active_tasks):
-                                self.comment_task_cursor = 0
-                            next_task = active_tasks[self.comment_task_cursor]
-                            next_task.next_run_at = time.time() + max(1, self.comment_interval)
+                        task.next_run_at = None
+                        remaining_tasks = get_active_comment_tasks()
+                        if remaining_tasks:
+                            if task in active_tasks:
+                                current_index = active_tasks.index(task)
+                            else:
+                                current_index = self.comment_task_cursor
+                            if current_index >= len(remaining_tasks):
+                                current_index = 0
+                            self.comment_task_cursor = current_index
+                            next_task = remaining_tasks[self.comment_task_cursor]
+                            next_task.next_run_at = time.time() + max(0, self.comment_interval)
                 else:
                     if task.next_run_at is None:
-                        task.next_run_at = time.time() + max(1, self.comment_interval)
+                        task.next_run_at = time.time() + max(0, self.comment_interval)
 
             except Exception as e:
                 if self.log_callback:

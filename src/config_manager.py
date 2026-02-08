@@ -26,20 +26,13 @@ class ConfigManager:
         if not os.path.exists(self.config_dir):
             os.makedirs(self.config_dir)
 
-    def save_config(self, accounts: List[Account], rules: List[Rule], license_config: Dict = None, rotation_config: Dict = None, posting_tasks: List[PostingTask] = None, comment_tasks: List[CommentTask] = None):
+    def save_config(self, accounts: List[Account], rules: List[Rule], license_config: Dict = None,
+                    rotation_config: Dict = None, posting_tasks: List[PostingTask] = None,
+                    comment_tasks: List[CommentTask] = None, workspaces: List[Dict] = None,
+                    active_workspace: int = None):
         """保存配置到文件"""
-        config_data = {
-            "accounts": [
-                {
-                    "token": acc.token,
-                    "is_active": acc.is_active,
-                    "is_valid": acc.is_valid,
-                    "last_verified": acc.last_verified,
-                    "user_info": acc.user_info
-                }
-                for acc in accounts
-            ],
-            "rules": [
+        def serialize_rules(rule_list: List[Rule]):
+            return [
                 {
                     "id": rule.id,
                     "keywords": rule.keywords,
@@ -55,8 +48,57 @@ class ConfigManager:
                     "image_path": getattr(rule, 'image_path', None),
                     "account_ids": getattr(rule, 'account_ids', [])
                 }
-                for rule in rules
+                for rule in rule_list
             ]
+
+        def serialize_posting_tasks(task_list: List[PostingTask]):
+            return [
+                {
+                    "id": task.id,
+                    "content": task.content,
+                    "channel_id": task.channel_id,
+                    "title": task.title,
+                    "image_path": task.image_path,
+                    "delay_seconds": task.delay_seconds,
+                    "is_active": task.is_active,
+                    "created_at": task.created_at,
+                    "tags": task.tags,
+                    "next_run_at": task.next_run_at,
+                    "sent_count": getattr(task, "sent_count", 0),
+                    "last_sent_at": getattr(task, "last_sent_at", None)
+                }
+                for task in task_list
+            ]
+
+        def serialize_comment_tasks(task_list: List[CommentTask]):
+            return [
+                {
+                    "id": task.id,
+                    "content": task.content,
+                    "message_link": task.message_link,
+                    "image_path": task.image_path,
+                    "delay_seconds": task.delay_seconds,
+                    "is_active": task.is_active,
+                    "created_at": task.created_at,
+                    "next_run_at": task.next_run_at,
+                    "sent_count": getattr(task, "sent_count", 0),
+                    "last_sent_at": getattr(task, "last_sent_at", None)
+                }
+                for task in task_list
+            ]
+
+        config_data = {
+            "accounts": [
+                {
+                    "token": acc.token,
+                    "is_active": acc.is_active,
+                    "is_valid": acc.is_valid,
+                    "last_verified": acc.last_verified,
+                    "user_info": acc.user_info
+                }
+                for acc in accounts
+            ],
+            "rules": serialize_rules(rules)
         }
 
         # 添加轮换配置
@@ -68,38 +110,28 @@ class ConfigManager:
             config_data["license"] = license_config
 
         # 添加发帖任务
-        if posting_tasks:
-            config_data["posting_tasks"] = [
-                {
-                    "id": task.id,
-                    "content": task.content,
-                    "channel_id": task.channel_id,
-                    "title": task.title,
-                    "image_path": task.image_path,
-                    "delay_seconds": task.delay_seconds,
-                    "is_active": task.is_active,
-                    "created_at": task.created_at,
-                    "tags": task.tags,
-                    "next_run_at": task.next_run_at
-                }
-                for task in posting_tasks
-            ]
+        if posting_tasks is not None:
+            config_data["posting_tasks"] = serialize_posting_tasks(posting_tasks)
 
         # 添加评论任务
-        if comment_tasks:
-            config_data["comment_tasks"] = [
-                {
-                    "id": task.id,
-                    "content": task.content,
-                    "message_link": task.message_link,
-                    "image_path": task.image_path,
-                    "delay_seconds": task.delay_seconds,
-                    "is_active": task.is_active,
-                    "created_at": task.created_at,
-                    "next_run_at": task.next_run_at
-                }
-                for task in comment_tasks
-            ]
+        if comment_tasks is not None:
+            config_data["comment_tasks"] = serialize_comment_tasks(comment_tasks)
+
+        if workspaces is not None:
+            config_data["workspaces"] = []
+            for ws in workspaces:
+                ws_rules = serialize_rules(ws.get("rules", []))
+                ws_posting = serialize_posting_tasks(ws.get("posting_tasks", []))
+                ws_comment = serialize_comment_tasks(ws.get("comment_tasks", []))
+                ws_rotation = ws.get("rotation", {})
+                config_data["workspaces"].append({
+                    "name": ws.get("name", "工具"),
+                    "rules": ws_rules,
+                    "posting_tasks": ws_posting,
+                    "comment_tasks": ws_comment,
+                    "rotation": ws_rotation
+                })
+            config_data["active_workspace"] = active_workspace if active_workspace is not None else 0
 
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
@@ -109,10 +141,10 @@ class ConfigManager:
             print(f"保存配置失败: {e}")
             return False
 
-    def load_config(self) -> tuple[List[Account], List[Rule], Dict, Dict, List[PostingTask], List[CommentTask]]:
+    def load_config(self) -> tuple[List[Account], List[Rule], Dict, Dict, List[PostingTask], List[CommentTask], List[Dict], int]:
         """从文件加载配置"""
         if not os.path.exists(self.config_file):
-            return [], [], {}, {}, [], []
+            return [], [], {}, {}, [], [], [], 0
 
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -129,24 +161,73 @@ class ConfigManager:
                 )
                 accounts.append(account)
 
-            rules = []
-            for rule_data in config_data.get("rules", []):
-                rule = Rule(
-                    id=rule_data.get("id", f"rule_{len(rules)}"),  # 如果没有id，生成一个
-                    keywords=rule_data["keywords"],
-                    reply=rule_data["reply"],
-                    match_type=MatchType(rule_data["match_type"]),
-                    target_channels=rule_data["target_channels"],
-                    delay_min=rule_data.get("delay_min", 2.0),
-                    delay_max=rule_data.get("delay_max", 5.0),
-                    is_active=rule_data.get("is_active", True),
-                    ignore_replies=rule_data.get("ignore_replies", False),
-                    ignore_mentions=rule_data.get("ignore_mentions", False),
-                    case_sensitive=rule_data.get("case_sensitive", False),
-                    image_path=rule_data.get("image_path"),
-                    account_ids=rule_data.get("account_ids", [])
-                )
-                rules.append(rule)
+            def parse_rules(rule_list):
+                rules = []
+                for rule_data in rule_list:
+                    rule = Rule(
+                        id=rule_data.get("id", f"rule_{len(rules)}"),  # 如果没有id，生成一个
+                        keywords=rule_data["keywords"],
+                        reply=rule_data["reply"],
+                        match_type=MatchType(rule_data["match_type"]),
+                        target_channels=rule_data["target_channels"],
+                        delay_min=rule_data.get("delay_min", 2.0),
+                        delay_max=rule_data.get("delay_max", 5.0),
+                        is_active=rule_data.get("is_active", True),
+                        ignore_replies=rule_data.get("ignore_replies", False),
+                        ignore_mentions=rule_data.get("ignore_mentions", False),
+                        case_sensitive=rule_data.get("case_sensitive", False),
+                        image_path=rule_data.get("image_path"),
+                        account_ids=rule_data.get("account_ids", [])
+                    )
+                    rules.append(rule)
+                return rules
+
+            def parse_posting_tasks(task_list):
+                posting_tasks = []
+                for task_data in task_list:
+                    tags = task_data.get("tags", [])
+                    if isinstance(tags, str):
+                        separators = [';', ',']
+                        for sep in separators:
+                            if sep in tags:
+                                tags = [t.strip() for t in tags.split(sep) if t.strip()]
+                                break
+                        else:
+                            tags = [tags.strip()] if tags.strip() else []
+                    task = PostingTask(
+                        id=task_data["id"],
+                        content=task_data["content"],
+                        channel_id=task_data["channel_id"],
+                        title=task_data.get("title"),
+                        image_path=task_data.get("image_path"),
+                        delay_seconds=task_data.get("delay_seconds", 0),
+                        is_active=task_data.get("is_active", True),
+                        created_at=task_data.get("created_at"),
+                        tags=tags,
+                        next_run_at=task_data.get("next_run_at"),
+                        sent_count=task_data.get("sent_count", 0),
+                        last_sent_at=task_data.get("last_sent_at")
+                    )
+                    posting_tasks.append(task)
+                return posting_tasks
+
+            def parse_comment_tasks(task_list):
+                comment_tasks = []
+                for task_data in task_list:
+                    task = CommentTask(
+                        id=task_data["id"],
+                        content=task_data["content"],
+                        message_link=task_data["message_link"],
+                        image_path=task_data.get("image_path"),
+                        delay_seconds=task_data.get("delay_seconds", 0),
+                        is_active=task_data.get("is_active", True),
+                        created_at=task_data.get("created_at"),
+                        next_run_at=task_data.get("next_run_at"),
+                        sent_count=task_data.get("sent_count", 0),
+                        last_sent_at=task_data.get("last_sent_at")
+                    )
+                    comment_tasks.append(task)
+                return comment_tasks
 
             # 加载许可证配置
             license_config = config_data.get("license", {})
@@ -154,52 +235,51 @@ class ConfigManager:
             # 加载轮换配置
             rotation_config = config_data.get("rotation", {})
 
-            # 加载发帖任务
-            posting_tasks = []
-            for task_data in config_data.get("posting_tasks", []):
-                tags = task_data.get("tags", [])
-                if isinstance(tags, str):
-                    separators = [';', ',']
-                    for sep in separators:
-                        if sep in tags:
-                            tags = [t.strip() for t in tags.split(sep) if t.strip()]
-                            break
-                    else:
-                        tags = [tags.strip()] if tags.strip() else []
-                task = PostingTask(
-                    id=task_data["id"],
-                    content=task_data["content"],
-                    channel_id=task_data["channel_id"],
-                    title=task_data.get("title"),
-                    image_path=task_data.get("image_path"),
-                    delay_seconds=task_data.get("delay_seconds", 0),
-                    is_active=task_data.get("is_active", True),
-                    created_at=task_data.get("created_at"),
-                    tags=tags,
-                    next_run_at=task_data.get("next_run_at")
-                )
-                posting_tasks.append(task)
+            # 默认加载顶层配置
+            rules = parse_rules(config_data.get("rules", []))
+            posting_tasks = parse_posting_tasks(config_data.get("posting_tasks", []))
+            comment_tasks = parse_comment_tasks(config_data.get("comment_tasks", []))
 
-            # 加载评论任务
-            comment_tasks = []
-            for task_data in config_data.get("comment_tasks", []):
-                task = CommentTask(
-                    id=task_data["id"],
-                    content=task_data["content"],
-                    message_link=task_data["message_link"],
-                    image_path=task_data.get("image_path"),
-                    delay_seconds=task_data.get("delay_seconds", 0),
-                    is_active=task_data.get("is_active", True),
-                    created_at=task_data.get("created_at"),
-                    next_run_at=task_data.get("next_run_at")
-                )
-                comment_tasks.append(task)
+            workspaces = []
+            active_workspace = 0
+            if "workspaces" in config_data:
+                for ws_data in config_data.get("workspaces", []):
+                    ws_rules = parse_rules(ws_data.get("rules", []))
+                    ws_posting = parse_posting_tasks(ws_data.get("posting_tasks", []))
+                    ws_comment = parse_comment_tasks(ws_data.get("comment_tasks", []))
+                    ws_rotation = ws_data.get("rotation", {})
+                    workspaces.append({
+                        "name": ws_data.get("name", "工具"),
+                        "rules": ws_rules,
+                        "posting_tasks": ws_posting,
+                        "comment_tasks": ws_comment,
+                        "rotation": ws_rotation
+                    })
 
-            return accounts, rules, license_config, rotation_config, posting_tasks, comment_tasks
+                active_workspace = config_data.get("active_workspace", 0) or 0
+                if workspaces:
+                    if active_workspace < 0 or active_workspace >= len(workspaces):
+                        active_workspace = 0
+                    current_ws = workspaces[active_workspace]
+                    rules = current_ws.get("rules", rules)
+                    posting_tasks = current_ws.get("posting_tasks", posting_tasks)
+                    comment_tasks = current_ws.get("comment_tasks", comment_tasks)
+                    rotation_config = current_ws.get("rotation", rotation_config)
+            else:
+                workspaces = [{
+                    "name": "工具1",
+                    "rules": rules,
+                    "posting_tasks": posting_tasks,
+                    "comment_tasks": comment_tasks,
+                    "rotation": rotation_config
+                }]
+                active_workspace = 0
+
+            return accounts, rules, license_config, rotation_config, posting_tasks, comment_tasks, workspaces, active_workspace
 
         except Exception as e:
             print(f"加载配置失败: {e}")
-            return [], [], {}, {}, [], []
+            return [], [], {}, {}, [], [], [], 0
 
     def export_config(self, filepath: str, accounts: List[Account], rules: List[Rule]) -> bool:
         """导出配置到指定文件"""
