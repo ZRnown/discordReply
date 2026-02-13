@@ -563,6 +563,7 @@ class DiscordManager:
         # 消息去重跟踪 - 存储已回复的消息ID，避免重复回复
         self.replied_messages: Set[int] = set()
         self.max_replied_messages: int = 1000  # 最多跟踪1000条消息
+        self.reply_processing_messages: Set[int] = set()  # 正在处理的消息ID，避免并发重复回复
 
         # 功能启用状态
         self.reply_enabled: bool = False  # 是否启用自动回复
@@ -810,105 +811,115 @@ class DiscordManager:
                 self.log_callback(f"⚠️ 消息 {message.id} 已被回复，跳过轮换回复")
             return False
 
-        account = self.get_next_available_account(allowed_tokens)
-        if not account:
+        # 避免并发处理同一条消息导致重复回复
+        if message.id in self.reply_processing_messages:
             if self.log_callback:
-                self.log_callback(f"❌ 所有账号都被频率限制，无法发送回复")
+                self.log_callback(f"⚠️ 消息 {message.id} 正在处理，跳过重复轮换请求")
             return False
 
-        # 查找对应的客户端
-        client = next((c for c in self.clients if c.account.token == account.token), None)
-        if not client:
-            if self.log_callback:
-                self.log_callback(f"❌ 找不到账号 {account.alias} 的客户端")
-            return False
-
+        self.reply_processing_messages.add(message.id)
         try:
-            # 标记这条消息已被回复
-            self.replied_messages.add(message.id)
+            attempted_tokens: Set[str] = set()
 
-            # 清理过期的消息ID（保持内存使用合理）
-            if len(self.replied_messages) > self.max_replied_messages:
-                # 移除最旧的一半消息
-                sorted_messages = sorted(self.replied_messages)
-                remove_count = len(sorted_messages) // 2
-                for msg_id in sorted_messages[:remove_count]:
-                    self.replied_messages.remove(msg_id)
+            while True:
+                available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
+                if allowed_tokens:
+                    available_accounts = [acc for acc in available_accounts if acc.token in allowed_tokens]
 
-            # 更新账号的最后发送时间
-            current_time = time.time()
-            account.last_sent_time = current_time
+                available_accounts = [acc for acc in available_accounts if acc.token not in attempted_tokens]
+                if not available_accounts:
+                    if self.log_callback:
+                        self.log_callback("❌ 可用轮换账号不足，无法完成回复")
+                    return False
 
-            # 使用目标账号客户端发送
-            client = next((c for c in self.clients if c.account.token == account.token), None)
-            if not client:
-                if self.log_callback:
-                    self.log_callback(f"❌ 找不到账号 {account.alias} 的客户端")
-                return False
-            if not client.is_running:
-                if self.log_callback:
-                    self.log_callback(f"⏳ 客户端 {account.alias} 尚未登录完成，跳过轮换回复")
-                return False
+                account = self.get_next_available_account(allowed_tokens)
+                if (not account) or (account.token in attempted_tokens):
+                    account = available_accounts[0]
 
-            channel = client.get_channel(message.channel.id)
-            if not channel:
-                channel = await client.fetch_channel(message.channel.id)
-            target_message = await channel.fetch_message(message.id)
+                attempted_tokens.add(account.token)
+                current_time = time.time()
+                account.last_sent_time = current_time
 
-            # 发送消息（支持图片）
-            image_paths = []
-            if image_path:
-                separators = [';', ',']
-                for sep in separators:
-                    if sep in image_path:
-                        image_paths = [path.strip() for path in image_path.split(sep) if path.strip()]
-                        break
-                else:
-                    image_paths = [image_path]
-                image_paths = [path for path in image_paths if os.path.exists(path)]
+                client = next((c for c in self.clients if c.account.token == account.token), None)
+                if not client:
+                    if self.log_callback:
+                        self.log_callback(f"❌ 找不到账号 {account.alias} 的客户端，尝试下一个账号")
+                    continue
+                if not client.is_running:
+                    if self.log_callback:
+                        self.log_callback(f"⏳ 客户端 {account.alias} 尚未登录完成，尝试下一个账号")
+                    continue
 
-            if image_paths:
-                files = [discord.File(path) for path in image_paths]
-                if reply_text.strip():
-                    await target_message.reply(reply_text, files=files)
-                else:
-                    await target_message.reply(files=files)
-            else:
-                await target_message.reply(reply_text)
+                try:
+                    channel = client.get_channel(message.channel.id)
+                    if not channel:
+                        channel = await client.fetch_channel(message.channel.id)
+                    target_message = await channel.fetch_message(message.id)
 
-            # 移动到下一个账号（基于允许账号池）
-            available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
-            if allowed_tokens:
-                available_accounts = [acc for acc in available_accounts if acc.token in allowed_tokens]
-            if available_accounts:
-                self.current_rotation_index = (self.current_rotation_index + 1) % len(available_accounts)
+                    image_paths = []
+                    if image_path:
+                        separators = [';', ',']
+                        for sep in separators:
+                            if sep in image_path:
+                                image_paths = [path.strip() for path in image_path.split(sep) if path.strip()]
+                                break
+                        else:
+                            image_paths = [image_path]
+                        image_paths = [path for path in image_paths if os.path.exists(path)]
 
-            if self.log_callback:
-                self.log_callback(f"✅ [{account.alias}] 轮换回复成功: '{reply_text[:50]}...'")
-            self.reply_sent_total += 1
+                    if image_paths:
+                        files = [discord.File(path) for path in image_paths]
+                        if reply_text.strip():
+                            await target_message.reply(reply_text, files=files)
+                        else:
+                            await target_message.reply(files=files)
+                    else:
+                        await target_message.reply(reply_text)
 
-            return True
+                    self.replied_messages.add(message.id)
+                    if len(self.replied_messages) > self.max_replied_messages:
+                        # 保留新消息，移除最旧的一半记录
+                        sorted_messages = sorted(self.replied_messages)
+                        remove_count = len(sorted_messages) // 2
+                        for msg_id in sorted_messages[:remove_count]:
+                            self.replied_messages.remove(msg_id)
 
-        except discord.HTTPException as e:
-            # 检查是否是频率限制错误
-            if e.code == 20016:  # 慢速模式
-                account.rate_limit_until = current_time + 600  # 10分钟限制
-                if self.log_callback:
-                    self.log_callback(f"⚠️ [{account.alias}] 触发慢速模式，10分钟内无法发送")
-            elif e.code == 50035:  # 无效表单内容
-                if self.log_callback:
-                    self.log_callback(f"❌ [{account.alias}] 发送失败: 无效内容")
-            else:
-                if self.log_callback:
-                    self.log_callback(f"❌ [{account.alias}] 发送失败: HTTP {e.code}")
+                    # 成功后移动到下一个账号
+                    all_rotatable_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
+                    if allowed_tokens:
+                        all_rotatable_accounts = [acc for acc in all_rotatable_accounts if acc.token in allowed_tokens]
+                    if all_rotatable_accounts:
+                        try:
+                            current_idx = all_rotatable_accounts.index(account)
+                        except ValueError:
+                            current_idx = self.current_rotation_index
+                        self.current_rotation_index = (current_idx + 1) % len(all_rotatable_accounts)
 
-            # 尝试下一个账号
-            return await self.send_rotated_reply(message, reply_text, rule_name, image_path=image_path, allowed_tokens=allowed_tokens)
+                    if self.log_callback:
+                        self.log_callback(f"✅ [{account.alias}] 轮换回复成功: '{reply_text[:50]}...'")
+                    self.reply_sent_total += 1
+                    return True
 
-        except Exception as e:
-            if self.log_callback:
-                self.log_callback(f"❌ [{account.alias}] 发送异常: {str(e)}")
-            return False
+                except discord.HTTPException as e:
+                    if e.code == 20016:  # 慢速模式
+                        account.rate_limit_until = current_time + 600  # 10分钟限制
+                        if self.log_callback:
+                            self.log_callback(f"⚠️ [{account.alias}] 触发慢速模式，10分钟内无法发送")
+                    elif e.code == 50035:  # 无效表单内容
+                        if self.log_callback:
+                            self.log_callback(f"❌ [{account.alias}] 发送失败: 无效内容")
+                    else:
+                        if self.log_callback:
+                            self.log_callback(f"❌ [{account.alias}] 发送失败: HTTP {e.code}")
+                    continue
+
+                except Exception as e:
+                    if self.log_callback:
+                        self.log_callback(f"❌ [{account.alias}] 发送异常: {str(e)}")
+                    continue
+
+        finally:
+            self.reply_processing_messages.discard(message.id)
 
     async def revalidate_account(self, token: str) -> Tuple[bool, Optional[str]]:
         """重新验证指定账号"""

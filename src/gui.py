@@ -929,11 +929,11 @@ class MainWindow(QMainWindow):
         reply_accounts_layout.setContentsMargins(10, 10, 10, 10)
 
         self.reply_accounts_combo = QComboBox()
-        self.reply_accounts_combo.addItem("随机使用所有账号")
+        self.reply_accounts_combo.addItem("随机使用所有账号", None)
         # 添加具体账号选项
         for account in self.discord_manager.accounts:
             if account.is_active and account.is_valid:
-                self.reply_accounts_combo.addItem(f"仅使用 {account.alias}")
+                self.reply_accounts_combo.addItem(f"仅使用 {account.alias}", account.token)
         self.reply_accounts_combo.setCurrentIndex(0)  # 默认随机使用所有账号
 
         reply_accounts_layout.addWidget(QLabel("回复账号:"))
@@ -2275,17 +2275,37 @@ class MainWindow(QMainWindow):
         """更新全局账号设置组合框"""
         # 更新自动回复组合框
         if hasattr(self, 'reply_accounts_combo'):
+            current_token = self.reply_accounts_combo.currentData()
             current_index = self.reply_accounts_combo.currentIndex()
             self.reply_accounts_combo.clear()
-            self.reply_accounts_combo.addItem("随机使用所有账号")
+            self.reply_accounts_combo.addItem("随机使用所有账号", None)
 
             # 添加具体账号选项
             for account in self.discord_manager.accounts:
                 if account.is_active and account.is_valid:
-                    self.reply_accounts_combo.addItem(f"仅使用 {account.alias}")
+                    self.reply_accounts_combo.addItem(f"仅使用 {account.alias}", account.token)
 
-            # 恢复之前的选择，如果可能的话
-            if current_index < self.reply_accounts_combo.count():
+            # 根据当前规则优先恢复选择（全空=随机；全同一个账号=仅使用该账号）
+            selected_token = None
+            if self.discord_manager.rules:
+                token_set = {
+                    rule.account_ids[0]
+                    for rule in self.discord_manager.rules
+                    if getattr(rule, "account_ids", None) and len(rule.account_ids) == 1
+                }
+                if len(token_set) == 1:
+                    selected_token = next(iter(token_set))
+
+            if selected_token is None:
+                selected_token = current_token
+
+            if selected_token is not None:
+                selected_index = self.reply_accounts_combo.findData(selected_token)
+                if selected_index >= 0:
+                    self.reply_accounts_combo.setCurrentIndex(selected_index)
+                elif current_index < self.reply_accounts_combo.count():
+                    self.reply_accounts_combo.setCurrentIndex(current_index)
+            elif current_index < self.reply_accounts_combo.count():
                 self.reply_accounts_combo.setCurrentIndex(current_index)
 
         # 更新自动发帖组合框
@@ -2983,21 +3003,23 @@ class MainWindow(QMainWindow):
 
     def apply_global_reply_accounts(self):
         """应用全局账号设置到所有规则"""
-        current_index = self.reply_accounts_combo.currentIndex()
+        selected_token = self.reply_accounts_combo.currentData()
+        valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+        valid_tokens = {acc.token for acc in valid_accounts}
 
-        if current_index == 0:
-            # 随机使用所有账号 - 清空所有规则的account_ids
-            for rule in self.discord_manager.rules:
-                rule.account_ids = []
-        else:
-            # 仅使用指定账号
-            selected_account_index = current_index - 1  # 减去"随机使用所有账号"选项
-            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
-            if selected_account_index < len(valid_accounts):
-                selected_account = valid_accounts[selected_account_index]
-                for rule in self.discord_manager.rules:
-                    rule.account_ids = [selected_account.token]
+        if selected_token is not None and selected_token not in valid_tokens:
+            QMessageBox.information(self, "提示", "未找到可用账号，请先验证账号")
+            return
 
+        target_rule_lists = [self.discord_manager.rules]
+        if self.workspaces:
+            target_rule_lists = [workspace.get("rules", []) for workspace in self.workspaces]
+
+        for rule_list in target_rule_lists:
+            for rule in rule_list:
+                rule.account_ids = [selected_token] if selected_token else []
+
+        self.refresh_runtime_contexts_from_workspaces()
         self.update_rules_list()
         self.save_config()
         QMessageBox.information(self, "成功", "自动回复账号设置已应用到所有规则")
@@ -4515,13 +4537,30 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     return None
 
-            parts = [part for part in text.split("/") if part]
-            for part in reversed(parts):
-                if part.isdigit():
+            # 支持 Discord 链接:
+            # https://discord.com/channels/{guild_id}/{channel_id}/{message_id}
+            match = re.search(r"/channels/\d+/(\d+)(?:/\d+)?", text)
+            if match:
+                try:
+                    return int(match.group(1))
+                except ValueError:
+                    return None
+
+            parts = [part for part in re.split(r"[/?#]", text) if part]
+            if "channels" in parts:
+                idx = parts.index("channels")
+                numeric_parts = [part for part in parts[idx + 1:] if part.isdigit()]
+                if len(numeric_parts) >= 2:
                     try:
-                        return int(part)
+                        return int(numeric_parts[1])
                     except ValueError:
                         return None
+                if len(numeric_parts) == 1:
+                    try:
+                        return int(numeric_parts[0])
+                    except ValueError:
+                        return None
+
             return None
 
         def normalize_image_path(value, base_dir):
@@ -4587,6 +4626,10 @@ class MainWindow(QMainWindow):
                 or data.get("链接")
                 or data.get("频道")
                 or data.get("频道ID")
+                or data.get("频道链接")
+                or data.get("内容链接")
+                or data.get("消息链接")
+                or data.get("帖子链接")
             )
             target_channels = []
             for token in split_text(channels_raw):
@@ -4650,6 +4693,10 @@ class MainWindow(QMainWindow):
                 ("channels.txt", "channels"),
                 ("link.txt", "link"),
                 ("频道.txt", "channel"),
+                ("频道链接.txt", "link"),
+                ("内容链接.txt", "link"),
+                ("消息链接.txt", "link"),
+                ("帖子链接.txt", "link"),
                 ("链接.txt", "link"),
                 ("match_type.txt", "match_type"),
                 ("匹配类型.txt", "match_type"),
@@ -4775,6 +4822,7 @@ class MainWindow(QMainWindow):
             added += 1
 
         self.update_rules_list()
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
         QMessageBox.information(self, "完成", f"已读取 {added} 条自动回复规则，跳过 {skipped} 条")
 
