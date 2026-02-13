@@ -1902,8 +1902,7 @@ class MainWindow(QMainWindow):
 
     def apply_rotation_config(self, rotation_config: Dict):
         """应用轮换/间隔/默认配置到管理器"""
-        if not rotation_config:
-            return
+        rotation_config = rotation_config or {}
         self.discord_manager.rotation_enabled = rotation_config.get("rotation_enabled", False)
         self.discord_manager.rotation_interval = rotation_config.get("rotation_interval", 600)  # 默认10分钟
         self.discord_manager.posting_rotation_enabled = rotation_config.get("posting_rotation_enabled", False)
@@ -3913,15 +3912,28 @@ class MainWindow(QMainWindow):
         def parse_task_dict(data):
             if not isinstance(data, dict):
                 return None
-            content = data.get("content") or data.get("text") or data.get("body")
+            content = (
+                data.get("content")
+                or data.get("text")
+                or data.get("body")
+                or data.get("内容")
+                or data.get("正文")
+                or data.get("文案")
+            )
             if isinstance(content, list):
                 content = "\n".join(str(v) for v in content if v is not None)
             if content is not None:
                 content = str(content).strip()
-            title = data.get("title")
+            title = data.get("title") or data.get("标题")
             if title is not None:
                 title = str(title).strip()
-            channel_value = data.get("channel_id") or data.get("channel")
+            channel_value = (
+                data.get("channel_id")
+                or data.get("channel")
+                or data.get("channelId")
+                or data.get("频道")
+                or data.get("频道ID")
+            )
             channel_id = None
             if channel_value:
                 channel_text = str(channel_value).strip().replace("<#", "").replace(">", "")
@@ -3933,13 +3945,19 @@ class MainWindow(QMainWindow):
                         if part.isdigit():
                             channel_id = int(part)
                             break
-            image_value = data.get("image_path") or data.get("images") or data.get("image")
+            image_value = (
+                data.get("image_path")
+                or data.get("images")
+                or data.get("image")
+                or data.get("图片")
+                or data.get("图片路径")
+            )
             image_path = None
             if isinstance(image_value, list):
                 image_path = ";".join(str(v) for v in image_value if str(v).strip())
             elif image_value:
                 image_path = str(image_value).strip()
-            tags = parse_tags(data.get("tags"))
+            tags = parse_tags(data.get("tags") or data.get("标签"))
             return {
                 "content": content,
                 "title": title or None,
@@ -3954,13 +3972,23 @@ class MainWindow(QMainWindow):
             channel_id = None
             tags = []
 
-            title_path = os.path.join(path, "title.txt")
-            if os.path.exists(title_path):
+            title_path = None
+            for name in ("title.txt", "标题.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    title_path = candidate
+                    break
+            if title_path and os.path.exists(title_path):
                 with open(title_path, "r", encoding="utf-8") as f:
                     title = f.read().strip()
 
-            channel_path = os.path.join(path, "channel.txt")
-            if os.path.exists(channel_path):
+            channel_path = None
+            for name in ("channel.txt", "channels.txt", "channel_id.txt", "频道.txt", "频道ID.txt", "频道id.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    channel_path = candidate
+                    break
+            if channel_path and os.path.exists(channel_path):
                 with open(channel_path, "r", encoding="utf-8") as f:
                     channel_text = f.read().strip()
                 if channel_text:
@@ -3974,17 +4002,35 @@ class MainWindow(QMainWindow):
                                 channel_id = int(part)
                                 break
 
-            tags_path = os.path.join(path, "tags.txt")
-            if os.path.exists(tags_path):
+            tags_path = None
+            for name in ("tags.txt", "标签.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    tags_path = candidate
+                    break
+            if tags_path and os.path.exists(tags_path):
                 with open(tags_path, "r", encoding="utf-8") as f:
                     tags = parse_tags(f.read())
 
-            content_path = os.path.join(path, "content.txt")
-            if os.path.exists(content_path):
+            content_path = None
+            for name in ("content.txt", "内容.txt", "正文.txt", "文案.txt", "text.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    content_path = candidate
+                    break
+            if content_path and os.path.exists(content_path):
                 with open(content_path, "r", encoding="utf-8") as f:
                     content = f.read().strip()
             else:
-                text_files = [f for f in os.listdir(path) if f.lower().endswith((".txt", ".md"))]
+                text_files = [
+                    f for f in os.listdir(path)
+                    if f.lower().endswith((".txt", ".md"))
+                    and f.lower() not in (
+                        "title.txt", "channel.txt", "channels.txt", "channel_id.txt",
+                        "tags.txt", "match_type.txt"
+                    )
+                    and f not in ("标题.txt", "频道.txt", "频道ID.txt", "频道id.txt", "标签.txt", "匹配类型.txt")
+                ]
                 if text_files:
                     first_text = os.path.join(path, text_files[0])
                     with open(first_text, "r", encoding="utf-8") as f:
@@ -4021,7 +4067,7 @@ class MainWindow(QMainWindow):
                         if task:
                             tasks.append(task)
                 elif isinstance(data, dict):
-                    items = data.get("tasks") or data.get("data")
+                    items = data.get("tasks") or data.get("data") or data.get("posts") or data.get("素材")
                     if isinstance(items, list):
                         for item in items:
                             task = parse_task_dict(item)
@@ -4036,7 +4082,7 @@ class MainWindow(QMainWindow):
 
         for filename in csv_files:
             try:
-                with open(os.path.join(folder, filename), "r", encoding="utf-8") as f:
+                with open(os.path.join(folder, filename), "r", encoding="utf-8-sig") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
                         task = parse_task_dict(row)
@@ -4219,8 +4265,24 @@ class MainWindow(QMainWindow):
                 or data.get("reply")
                 or data.get("text")
                 or data.get("body")
+                or data.get("内容")
+                or data.get("评论")
+                or data.get("文案")
+                or data.get("正文")
             )
             comments = parse_comment_blocks(comment_value)
+            title_value = data.get("title") or data.get("标题") or data.get("name")
+            title_text = ""
+            if title_value is not None:
+                title_text = str(title_value).strip()
+            if title_text:
+                if comments:
+                    comments = [
+                        f"【{title_text}】\n{comment}" if title_text not in comment else comment
+                        for comment in comments
+                    ]
+                else:
+                    comments = [title_text]
 
             links_value = (
                 data.get("message_link")
@@ -4231,10 +4293,22 @@ class MainWindow(QMainWindow):
                 or data.get("target")
                 or data.get("channel_id")
                 or data.get("channel")
+                or data.get("链接")
+                or data.get("地址")
+                or data.get("帖子链接")
+                or data.get("消息链接")
+                or data.get("频道")
+                or data.get("频道ID")
             )
             links = split_simple_text(links_value)
 
-            image_value = data.get("image_path") or data.get("images") or data.get("image")
+            image_value = (
+                data.get("image_path")
+                or data.get("images")
+                or data.get("image")
+                or data.get("图片")
+                or data.get("图片路径")
+            )
             image_path = normalize_image_path(image_value, base_dir)
 
             return build_comment_tasks(comments, links, image_path)
@@ -4242,8 +4316,20 @@ class MainWindow(QMainWindow):
         def parse_task_folder(path):
             comments = []
             links = []
+            title_text = ""
 
-            for name in ("content.txt", "comment.txt", "comments.txt", "reply.txt", "text.txt"):
+            for name in ("title.txt", "标题.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        title_text = f.read().strip()
+                    if title_text:
+                        break
+
+            for name in (
+                "content.txt", "comment.txt", "comments.txt", "reply.txt", "text.txt",
+                "内容.txt", "评论.txt", "文案.txt", "正文.txt"
+            ):
                 candidate = os.path.join(path, name)
                 if os.path.exists(candidate):
                     with open(candidate, "r", encoding="utf-8") as f:
@@ -4251,7 +4337,10 @@ class MainWindow(QMainWindow):
                     if comments:
                         break
 
-            for name in ("links.txt", "link.txt", "url.txt", "urls.txt", "message_link.txt"):
+            for name in (
+                "links.txt", "link.txt", "url.txt", "urls.txt", "message_link.txt",
+                "链接.txt", "地址.txt", "帖子链接.txt", "消息链接.txt"
+            ):
                 candidate = os.path.join(path, name)
                 if os.path.exists(candidate):
                     with open(candidate, "r", encoding="utf-8") as f:
@@ -4264,6 +4353,15 @@ class MainWindow(QMainWindow):
                 if file_name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
                     image_files.append(os.path.join(path, file_name))
             image_path = ";".join(sorted(image_files)) if image_files else None
+
+            if title_text:
+                if comments:
+                    comments = [
+                        f"【{title_text}】\n{comment}" if title_text not in comment else comment
+                        for comment in comments
+                    ]
+                else:
+                    comments = [title_text]
 
             return build_comment_tasks(comments, links, image_path)
 
@@ -4281,7 +4379,7 @@ class MainWindow(QMainWindow):
                     for item in data:
                         tasks.extend(parse_comment_dict(item, folder))
                 elif isinstance(data, dict):
-                    payload = data.get("tasks") or data.get("data")
+                    payload = data.get("tasks") or data.get("data") or data.get("comments") or data.get("素材")
                     if isinstance(payload, list):
                         for item in payload:
                             tasks.extend(parse_comment_dict(item, folder))
@@ -4302,24 +4400,38 @@ class MainWindow(QMainWindow):
 
         if not tasks:
             links_file = None
-            for name in ("links.txt", "link.txt", "url.txt", "urls.txt"):
+            for name in ("links.txt", "link.txt", "url.txt", "urls.txt", "链接.txt", "地址.txt", "帖子链接.txt", "消息链接.txt"):
                 candidate = os.path.join(folder, name)
                 if os.path.exists(candidate):
                     links_file = candidate
                     break
 
             comments_file = None
-            for name in ("comments.txt", "content.txt", "reply.txt", "text.txt"):
+            for name in ("comments.txt", "content.txt", "reply.txt", "text.txt", "内容.txt", "评论.txt", "文案.txt", "正文.txt"):
                 candidate = os.path.join(folder, name)
                 if os.path.exists(candidate):
                     comments_file = candidate
                     break
 
-            if links_file and comments_file:
+            title_file = None
+            for name in ("title.txt", "标题.txt"):
+                candidate = os.path.join(folder, name)
+                if os.path.exists(candidate):
+                    title_file = candidate
+                    break
+
+            if links_file and (comments_file or title_file):
                 with open(links_file, "r", encoding="utf-8") as f:
                     links = split_simple_text(f.read())
-                with open(comments_file, "r", encoding="utf-8") as f:
-                    comments = parse_comment_blocks(f.read())
+                comments = []
+                if comments_file:
+                    with open(comments_file, "r", encoding="utf-8") as f:
+                        comments = parse_comment_blocks(f.read())
+                if not comments and title_file:
+                    with open(title_file, "r", encoding="utf-8") as f:
+                        title_text = f.read().strip()
+                    if title_text:
+                        comments = [title_text]
                 tasks.extend(build_comment_tasks(comments, links, None))
 
         if not tasks:
@@ -4447,6 +4559,8 @@ class MainWindow(QMainWindow):
                 or data.get("title")
                 or data.get("titles")
                 or data.get("name")
+                or data.get("标题")
+                or data.get("关键词")
             )
             keywords = split_text(keywords)
 
@@ -4456,6 +4570,9 @@ class MainWindow(QMainWindow):
                 or data.get("text")
                 or data.get("body")
                 or data.get("message")
+                or data.get("内容")
+                or data.get("正文")
+                or data.get("文案")
             )
             if isinstance(reply_text, list):
                 reply_text = "\n".join(str(v) for v in reply_text if v is not None)
@@ -4467,6 +4584,9 @@ class MainWindow(QMainWindow):
                 or data.get("channel")
                 or data.get("link")
                 or data.get("url")
+                or data.get("链接")
+                or data.get("频道")
+                or data.get("频道ID")
             )
             target_channels = []
             for token in split_text(channels_raw):
@@ -4474,7 +4594,7 @@ class MainWindow(QMainWindow):
                 if channel_id is not None and channel_id not in target_channels:
                     target_channels.append(channel_id)
 
-            match_type = str(data.get("match_type", "partial") or "partial").lower()
+            match_type = str(data.get("match_type") or data.get("匹配类型") or "partial").lower()
             if match_type not in ("partial", "exact", "regex"):
                 match_type = "partial"
 
@@ -4483,14 +4603,26 @@ class MainWindow(QMainWindow):
                 "reply": reply_text,
                 "match_type": match_type,
                 "target_channels": target_channels,
-                "delay_min": safe_float(data.get("delay_min", 0.1), 0.1),
-                "delay_max": safe_float(data.get("delay_max", 1.0), 1.0),
-                "is_active": parse_bool(data.get("is_active"), True),
-                "ignore_replies": parse_bool(data.get("ignore_replies"), True),
-                "ignore_mentions": parse_bool(data.get("ignore_mentions"), True),
-                "case_sensitive": parse_bool(data.get("case_sensitive"), False),
-                "image_path": normalize_image_path(data.get("image") or data.get("images") or data.get("image_path"), base_dir),
-                "account_ids": split_text(data.get("account_ids") or data.get("accounts"))
+                "delay_min": safe_float(data.get("delay_min") or data.get("最小延迟") or data.get("延迟下限") or 0.1, 0.1),
+                "delay_max": safe_float(data.get("delay_max") or data.get("最大延迟") or data.get("延迟上限") or 1.0, 1.0),
+                "is_active": parse_bool(data.get("is_active") if "is_active" in data else data.get("启用"), True),
+                "ignore_replies": parse_bool(data.get("ignore_replies") if "ignore_replies" in data else data.get("忽略回复"), True),
+                "ignore_mentions": parse_bool(data.get("ignore_mentions") if "ignore_mentions" in data else data.get("忽略提及"), True),
+                "case_sensitive": parse_bool(data.get("case_sensitive") if "case_sensitive" in data else data.get("区分大小写"), False),
+                "image_path": normalize_image_path(
+                    data.get("image")
+                    or data.get("images")
+                    or data.get("image_path")
+                    or data.get("图片")
+                    or data.get("图片路径"),
+                    base_dir
+                ),
+                "account_ids": split_text(
+                    data.get("account_ids")
+                    or data.get("accounts")
+                    or data.get("账号")
+                    or data.get("账号列表")
+                )
             }
 
             if not rule_data["keywords"] or not rule_data["reply"]:
@@ -4506,13 +4638,21 @@ class MainWindow(QMainWindow):
                 ("keywords.txt", "keywords"),
                 ("keyword.txt", "keywords"),
                 ("title.txt", "keywords"),
+                ("标题.txt", "keywords"),
+                ("关键词.txt", "keywords"),
                 ("reply.txt", "reply"),
                 ("content.txt", "reply"),
                 ("text.txt", "reply"),
+                ("内容.txt", "reply"),
+                ("正文.txt", "reply"),
+                ("文案.txt", "reply"),
                 ("channel.txt", "channel"),
                 ("channels.txt", "channels"),
                 ("link.txt", "link"),
+                ("频道.txt", "channel"),
+                ("链接.txt", "link"),
                 ("match_type.txt", "match_type"),
+                ("匹配类型.txt", "match_type"),
             ):
                 candidate = os.path.join(path, file_name)
                 if os.path.exists(candidate):
