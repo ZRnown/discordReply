@@ -125,11 +125,13 @@ class ConfigManager:
                 ws_comment = serialize_comment_tasks(ws.get("comment_tasks", []))
                 ws_rotation = ws.get("rotation", {})
                 config_data["workspaces"].append({
+                    "id": ws.get("id"),
                     "name": ws.get("name", "工具"),
                     "rules": ws_rules,
                     "posting_tasks": ws_posting,
                     "comment_tasks": ws_comment,
-                    "rotation": ws_rotation
+                    "rotation": ws_rotation,
+                    "features": ws.get("features", {})
                 })
             config_data["active_workspace"] = active_workspace if active_workspace is not None else 0
 
@@ -249,11 +251,13 @@ class ConfigManager:
                     ws_comment = parse_comment_tasks(ws_data.get("comment_tasks", []))
                     ws_rotation = ws_data.get("rotation", {})
                     workspaces.append({
+                        "id": ws_data.get("id"),
                         "name": ws_data.get("name", "工具"),
                         "rules": ws_rules,
                         "posting_tasks": ws_posting,
                         "comment_tasks": ws_comment,
-                        "rotation": ws_rotation
+                        "rotation": ws_rotation,
+                        "features": ws_data.get("features", {})
                     })
 
                 active_workspace = config_data.get("active_workspace", 0) or 0
@@ -267,11 +271,13 @@ class ConfigManager:
                     rotation_config = current_ws.get("rotation", rotation_config)
             else:
                 workspaces = [{
+                    "id": None,
                     "name": "工具1",
                     "rules": rules,
                     "posting_tasks": posting_tasks,
                     "comment_tasks": comment_tasks,
-                    "rotation": rotation_config
+                    "rotation": rotation_config,
+                    "features": {}
                 }]
                 active_workspace = 0
 

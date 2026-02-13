@@ -3,6 +3,7 @@ import discord
 import re
 import random
 import time
+import copy
 import logging
 import aiohttp
 import platform
@@ -216,8 +217,17 @@ class AutoReplyClient(discord.Client):
         if not self.discord_manager.reply_enabled:
             return
 
-        # 启动倒计时未结束则不回复
-        if (self.discord_manager.reply_start_at is not None and
+        runtime_rules = self.rules
+        if self.discord_manager:
+            runtime_rules = self.discord_manager.get_active_reply_rules()
+
+        # 没有可用规则时无需继续
+        if not runtime_rules:
+            return
+
+        # 兼容旧模式：仅在未使用多页面上下文时才用全局启动倒计时拦截
+        if (not self.discord_manager.workspace_reply_contexts and
+                self.discord_manager.reply_start_at is not None and
                 time.time() < self.discord_manager.reply_start_at):
             return
 
@@ -234,7 +244,7 @@ class AutoReplyClient(discord.Client):
 
         # 过滤出当前账号可以使用的规则
         applicable_rules = []
-        for rule in self.rules:
+        for rule in runtime_rules:
             if not rule.is_active:
                 continue
             # 如果规则指定了账号ID列表，则检查当前账号是否在列表中
@@ -558,12 +568,16 @@ class DiscordManager:
         self.reply_enabled: bool = False  # 是否启用自动回复
         self.posting_enabled: bool = False  # 是否启用自动发帖
         self.comment_enabled: bool = False  # 是否启用自动评论
+        self.reply_rule_pool: List[Rule] = []  # 多页面运行时自动回复规则池
+        self.workspace_reply_contexts: Dict[str, Dict] = {}  # 多页面自动回复上下文
 
         # 发帖和评论管理
         self.posting_tasks: List[PostingTask] = []  # 发帖任务列表
         self.comment_tasks: List[CommentTask] = []  # 评论任务列表
         self.posting_interval: int = 30  # 发帖间隔（秒），默认30秒
         self.comment_interval: int = 30  # 评论间隔（秒），默认30秒
+        self.posting_cycle_interval: int = 30  # 发帖循环轮次间隔（秒）
+        self.comment_cycle_interval: int = 30  # 评论循环轮次间隔（秒）
         self.posting_repeat_enabled: bool = False  # 发帖任务是否循环执行
         self.comment_repeat_enabled: bool = False  # 评论任务是否循环执行
         self.comment_link_interval: int = 5  # 评论多链接间隔（秒）
@@ -582,8 +596,14 @@ class DiscordManager:
         self.reply_sent_total: int = 0  # 回复发送总数
         self.posting_task_cursor: int = 0  # 发帖任务轮询索引
         self.comment_task_cursor: int = 0  # 评论任务轮询索引
+        self.runtime_posting_tasks: List[PostingTask] = []  # 运行中的发帖任务快照
+        self.runtime_comment_tasks: List[CommentTask] = []  # 运行中的评论任务快照
+        self.workspace_posting_contexts: Dict[str, Dict] = {}  # 多页面发帖运行上下文
+        self.workspace_comment_contexts: Dict[str, Dict] = {}  # 多页面评论运行上下文
         self.current_posting_index: int = 0  # 当前发帖账号索引
         self.current_comment_index: int = 0  # 当前评论账号索引
+        self.posting_scheduler_running: bool = False
+        self.comment_scheduler_running: bool = False
 
         # 发帖和评论轮换设置
         self.posting_rotation_enabled: bool = False  # 是否启用发帖账号轮换
@@ -664,6 +684,27 @@ class DiscordManager:
                 if hasattr(rule, key):
                     setattr(rule, key, value)
 
+    def get_active_reply_rules(self) -> List[Rule]:
+        """获取当前运行时生效的自动回复规则"""
+        if self.workspace_reply_contexts:
+            now = time.time()
+            rules: List[Rule] = []
+            for context in self.workspace_reply_contexts.values():
+                if not context.get("enabled", False):
+                    continue
+                start_at = context.get("start_at")
+                if start_at is not None and now < start_at:
+                    continue
+                rules.extend(context.get("rules", []))
+
+            # 保留一份缓存，兼容其他读取点
+            self.reply_rule_pool = rules
+            return rules
+
+        if self.reply_rule_pool:
+            return self.reply_rule_pool
+        return self.rules
+
     async def start_all_clients(self):
         if self.is_running: return
 
@@ -675,7 +716,7 @@ class DiscordManager:
         for acc in self.accounts:
             if acc.is_active and acc.is_valid:
                 # 所有客户端都使用所有规则，规则级别控制账号选择
-                client = AutoReplyClient(acc, self.rules, self.log_callback, self)
+                client = AutoReplyClient(acc, self.get_active_reply_rules() or self.rules, self.log_callback, self)
                 self.clients.append(client)
                 # 创建启动任务，让它们在后台运行
                 asyncio.create_task(client.start_client())
@@ -962,12 +1003,13 @@ class DiscordManager:
         self.comment_tasks.append(task)
         return task_id
 
-    async def execute_posting_task(self, task: PostingTask) -> bool:
+    async def execute_posting_task(self, task: PostingTask, runtime: Optional[Dict] = None) -> bool:
         """执行发帖任务"""
         if self.log_callback:
             self.log_callback(f"🔍 执行发帖任务: ID={task.id}, 频道={task.channel_id}, 内容='{task.content[:50]}...'")
 
-        if not self.posting_enabled:
+        runtime_enabled = self.posting_enabled if runtime is None else runtime.get("enabled", True)
+        if not runtime_enabled:
             if self.log_callback:
                 self.log_callback("❌ 发帖功能未启用")
             return False
@@ -986,8 +1028,12 @@ class DiscordManager:
 
         # 获取下一个可用的账号
         available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
-        if self.posting_account_tokens:
-            available_accounts = [acc for acc in available_accounts if acc.token in self.posting_account_tokens]
+        account_tokens = self.posting_account_tokens
+        if runtime is not None:
+            account_tokens = runtime.get("account_tokens", account_tokens)
+
+        if account_tokens:
+            available_accounts = [acc for acc in available_accounts if acc.token in account_tokens]
         if not available_accounts:
             if self.log_callback:
                 self.log_callback("❌ 没有可用的账号用于发帖")
@@ -996,19 +1042,36 @@ class DiscordManager:
         if self.log_callback:
             self.log_callback(f"✅ 找到 {len(available_accounts)} 个可用账号")
 
+        rotation_enabled = self.posting_rotation_enabled
+        rotation_count = max(1, int(self.posting_rotation_count))
+        posting_index = self.current_posting_index
+        posting_count_since_rotation = self.posting_count_since_rotation
+        if runtime is not None:
+            rotation_enabled = bool(runtime.get("rotation_enabled", rotation_enabled))
+            rotation_count = max(1, int(runtime.get("rotation_count", rotation_count)))
+            posting_index = int(runtime.get("current_index", posting_index))
+            posting_count_since_rotation = int(runtime.get("count_since_rotation", posting_count_since_rotation))
+
         # 选择账号
-        if self.posting_rotation_enabled and self.posting_count_since_rotation >= self.posting_rotation_count:
+        if rotation_enabled and posting_count_since_rotation >= rotation_count:
             # 轮换到下一个账号
-            self.current_posting_index = (self.current_posting_index + 1) % len(available_accounts)
-            self.posting_count_since_rotation = 0
+            posting_index = (posting_index + 1) % len(available_accounts)
+            posting_count_since_rotation = 0
             if self.log_callback:
                 self.log_callback(f"🔄 发帖账号轮换到下一个")
 
-        account = available_accounts[self.current_posting_index % len(available_accounts)]
+        account = available_accounts[posting_index % len(available_accounts)]
 
         # 未启用轮换时按顺序使用账号（或固定账号）
-        if not self.posting_rotation_enabled:
-            self.current_posting_index = (self.current_posting_index + 1) % len(available_accounts)
+        if not rotation_enabled:
+            posting_index = (posting_index + 1) % len(available_accounts)
+
+        if runtime is not None:
+            runtime["current_index"] = posting_index
+            runtime["count_since_rotation"] = posting_count_since_rotation
+        else:
+            self.current_posting_index = posting_index
+            self.posting_count_since_rotation = posting_count_since_rotation
 
         # 查找对应的客户端
         if self.log_callback:
@@ -1132,11 +1195,17 @@ class DiscordManager:
                     task.sent_count += 1
                     task.last_sent_at = time.time()
                     self.posting_sent_total += 1
-                    self.posting_count_since_rotation += 1
+                    if runtime is not None:
+                        runtime["count_since_rotation"] = int(runtime.get("count_since_rotation", 0)) + 1
+                    else:
+                        self.posting_count_since_rotation += 1
                     return True
                 except discord.HTTPException as e:
                     if e.code == 20016:
-                        retry_after = getattr(e, "retry_after", None) or self.posting_interval or 60
+                        interval_base = self.posting_interval
+                        if runtime is not None:
+                            interval_base = max(0, int(runtime.get("posting_interval", interval_base)))
+                        retry_after = getattr(e, "retry_after", None) or interval_base or 60
                         task.next_run_at = time.time() + max(1, retry_after)
                         if self.log_callback:
                             self.log_callback(f"⚠️ [{account.alias}] 慢速模式限制，{int(retry_after)}秒后重试")
@@ -1168,17 +1237,26 @@ class DiscordManager:
             task.sent_count += 1
             task.last_sent_at = time.time()
             self.posting_sent_total += 1
-            self.posting_count_since_rotation += 1
+            if runtime is not None:
+                runtime["count_since_rotation"] = int(runtime.get("count_since_rotation", 0)) + 1
+            else:
+                self.posting_count_since_rotation += 1
 
             if self.log_callback:
-                rotation_info = f" (轮换计数: {self.posting_count_since_rotation}/{self.posting_rotation_count})" if self.posting_rotation_enabled else ""
+                rotation_enabled_log = self.posting_rotation_enabled if runtime is None else bool(runtime.get("rotation_enabled", self.posting_rotation_enabled))
+                rotation_count_log = self.posting_rotation_count if runtime is None else max(1, int(runtime.get("rotation_count", self.posting_rotation_count)))
+                rotation_num_log = self.posting_count_since_rotation if runtime is None else int(runtime.get("count_since_rotation", 0))
+                rotation_info = f" (轮换计数: {rotation_num_log}/{rotation_count_log})" if rotation_enabled_log else ""
                 self.log_callback(f"✅ [{account.alias}] 发帖成功: '{task.content[:50]}...'{rotation_info}")
 
             return True
 
         except discord.HTTPException as e:
             if e.code == 20016:
-                retry_after = getattr(e, "retry_after", None) or self.posting_interval or 60
+                interval_base = self.posting_interval
+                if runtime is not None:
+                    interval_base = max(0, int(runtime.get("posting_interval", interval_base)))
+                retry_after = getattr(e, "retry_after", None) or interval_base or 60
                 task.next_run_at = time.time() + max(1, retry_after)
                 if self.log_callback:
                     self.log_callback(f"⚠️ [{account.alias}] 慢速模式限制，{int(retry_after)}秒后重试")
@@ -1190,33 +1268,55 @@ class DiscordManager:
                 self.log_callback(f"❌ [{account.alias}] 发帖失败: {str(e)}")
             return False
 
-    async def execute_comment_task(self, task: CommentTask) -> bool:
+    async def execute_comment_task(self, task: CommentTask, runtime: Optional[Dict] = None) -> bool:
         """执行评论任务"""
-        if not self.comment_enabled:
+        runtime_enabled = self.comment_enabled if runtime is None else runtime.get("enabled", True)
+        if not runtime_enabled:
             return False
 
         # 获取下一个可用的账号
         available_accounts = [acc for acc in self.accounts if acc.is_active and acc.is_valid]
-        if self.comment_account_tokens:
-            available_accounts = [acc for acc in available_accounts if acc.token in self.comment_account_tokens]
+        account_tokens = self.comment_account_tokens
+        if runtime is not None:
+            account_tokens = runtime.get("account_tokens", account_tokens)
+
+        if account_tokens:
+            available_accounts = [acc for acc in available_accounts if acc.token in account_tokens]
         if not available_accounts:
             if self.log_callback:
                 self.log_callback("❌ 没有可用的账号用于评论")
             return False
 
+        rotation_enabled = self.comment_rotation_enabled
+        rotation_count = max(1, int(self.comment_rotation_count))
+        comment_index = self.current_comment_index
+        comment_count_since_rotation = self.comment_count_since_rotation
+        if runtime is not None:
+            rotation_enabled = bool(runtime.get("rotation_enabled", rotation_enabled))
+            rotation_count = max(1, int(runtime.get("rotation_count", rotation_count)))
+            comment_index = int(runtime.get("current_index", comment_index))
+            comment_count_since_rotation = int(runtime.get("count_since_rotation", comment_count_since_rotation))
+
         # 选择账号
-        if self.comment_rotation_enabled and self.comment_count_since_rotation >= self.comment_rotation_count:
+        if rotation_enabled and comment_count_since_rotation >= rotation_count:
             # 轮换到下一个账号
-            self.current_comment_index = (self.current_comment_index + 1) % len(available_accounts)
-            self.comment_count_since_rotation = 0
+            comment_index = (comment_index + 1) % len(available_accounts)
+            comment_count_since_rotation = 0
             if self.log_callback:
                 self.log_callback(f"🔄 评论账号轮换到下一个")
 
-        account = available_accounts[self.current_comment_index % len(available_accounts)]
+        account = available_accounts[comment_index % len(available_accounts)]
 
         # 如果不是轮换模式，仍然正常轮换
-        if not self.comment_rotation_enabled:
-            self.current_comment_index = (self.current_comment_index + 1) % len(available_accounts)
+        if not rotation_enabled:
+            comment_index = (comment_index + 1) % len(available_accounts)
+
+        if runtime is not None:
+            runtime["current_index"] = comment_index
+            runtime["count_since_rotation"] = comment_count_since_rotation
+        else:
+            self.current_comment_index = comment_index
+            self.comment_count_since_rotation = comment_count_since_rotation
 
         # 查找对应的客户端
         client = next((c for c in self.clients if c.account.token == account.token), None)
@@ -1245,12 +1345,20 @@ class DiscordManager:
 
             success_count = 0
             link_interval = max(0, self.comment_link_interval)
+            if runtime is not None:
+                link_interval = max(0, int(runtime.get("comment_link_interval", link_interval)))
 
             for index, link in enumerate(links):
-                if not self.comment_enabled:
+                if not runtime_enabled:
                     if self.log_callback:
                         self.log_callback("⏹️ 自动评论已关闭，停止当前评论任务")
                     break
+
+                # 兼容 <https://...>、末尾斜杠、<#频道ID> 等复制格式
+                link = link.strip().strip('<>').rstrip('/')
+                if link.startswith("<#") and link.endswith(">"):
+                    link = link[2:-1]
+
                 if link.isdigit():
                     try:
                         channel_id = int(link)
@@ -1352,7 +1460,10 @@ class DiscordManager:
                                 await target_channel.send()
                 except discord.HTTPException as e:
                     if e.code == 20016:
-                        retry_after = getattr(e, "retry_after", None) or self.comment_interval or 60
+                        interval_base = self.comment_interval
+                        if runtime is not None:
+                            interval_base = max(0, int(runtime.get("comment_interval", interval_base)))
+                        retry_after = getattr(e, "retry_after", None) or interval_base or 60
                         task.next_run_at = time.time() + max(1, retry_after)
                         if self.log_callback:
                             self.log_callback(f"⚠️ [{account.alias}] 慢速模式限制，{int(retry_after)}秒后重试")
@@ -1377,7 +1488,10 @@ class DiscordManager:
                 task.last_sent_at = time.time()
                 self.comment_sent_total += success_count
 
-            self.comment_count_since_rotation += 1
+            if runtime is not None:
+                runtime["count_since_rotation"] = int(runtime.get("count_since_rotation", 0)) + 1
+            else:
+                self.comment_count_since_rotation += 1
             return True
 
         except Exception as e:
@@ -1386,240 +1500,342 @@ class DiscordManager:
             return False
 
     async def start_posting_scheduler(self):
-        """启动发帖调度器"""
-        if self.log_callback:
-            self.log_callback(f"📝 发帖调度器开始运行 - 任务数量: {len(self.posting_tasks)}")
+        """启动发帖调度器（支持多页面独立运行）"""
+        if self.posting_scheduler_running:
+            return
+        self.posting_scheduler_running = True
 
-        # 等待至少有一个客户端登录成功
-        if self.log_callback:
-            self.log_callback(f"📝 开始等待客户端登录 - 当前客户端数量: {len(self.clients)}")
+        default_contexts = None
 
-        # 首先检查是否已经有登录的客户端
-        running_clients = [c for c in self.clients if c.is_running]
-        if running_clients and self.log_callback:
-            self.log_callback(f"📝 发现已有 {len(running_clients)} 个已登录客户端，开始处理发帖任务")
-        else:
-            # 等待客户端登录，最多等待30秒
+        try:
+            if self.log_callback:
+                self.log_callback(f"📝 发帖调度器开始运行 - 任务数量: {len(self.posting_tasks)}")
+
+            running_clients = [c for c in self.clients if c.is_running]
             wait_count = 0
-            max_waits = 15  # 15次检查 = 30秒
-            while self.posting_enabled and wait_count < max_waits:
-                running_clients = [c for c in self.clients if c.is_running]
+            max_waits = 15
+            while self.posting_enabled and not running_clients and wait_count < max_waits:
                 if self.log_callback:
-                    import time
-                    current_time = time.time()
-                    self.log_callback(f"📝 等待检查 #{wait_count} - 运行中客户端: {len(running_clients)}/{len(self.clients)} (时间: {current_time:.1f})")
-                    # 显示每个客户端的状态
-                    for i, client in enumerate(self.clients):
-                        self.log_callback(f"  客户端 {i}: {client.account.alias}, 运行状态: {client.is_running}")
-
-                if running_clients:
-                    if self.log_callback:
-                        self.log_callback(f"📝 检测到 {len(running_clients)} 个已登录客户端，开始处理发帖任务")
-                    break
-
-                if self.log_callback:
-                    self.log_callback("⏳ 等待客户端登录完成...")
-                await asyncio.sleep(2)  # 每2秒检查一次
+                    self.log_callback("⏳ 发帖调度器等待客户端登录...")
+                await asyncio.sleep(2)
                 wait_count += 1
+                running_clients = [c for c in self.clients if c.is_running]
 
-            # 如果等待超时但仍有任务，记录警告
-            if not running_clients and self.posting_enabled and self.posting_tasks and self.log_callback:
-                self.log_callback("⚠️ 等待客户端登录超时，将在客户端登录后重试任务执行")
+            if not self.workspace_posting_contexts:
+                runtime_tasks = [copy.deepcopy(task) for task in self.posting_tasks]
+                for task in runtime_tasks:
+                    if task.is_active:
+                        task.next_run_at = None
+                        task.sent_count = 0
 
-        # 重置任务倒计时，确保首条任务先发送
-        for task in self.posting_tasks:
-            if task.is_active:
-                task.next_run_at = None
-        self.posting_task_cursor = 0
+                start_at = self.posting_start_at
+                if start_at is None:
+                    start_delay = max(0, self.posting_start_delay)
+                    start_at = time.time() + start_delay if start_delay > 0 else None
 
-        def get_active_posting_tasks():
-            tasks = [task for task in self.posting_tasks if task.is_active]
-            if not self.posting_repeat_enabled:
-                tasks = [task for task in tasks if task.sent_count == 0]
-            return tasks
+                default_contexts = {
+                    "default": {
+                        "enabled": self.posting_enabled,
+                        "name": "默认页面",
+                        "tasks": runtime_tasks,
+                        "cursor": 0,
+                        "posting_interval": max(0, int(self.posting_interval)),
+                        "cycle_interval": max(0, int(self.posting_cycle_interval)),
+                        "repeat_enabled": bool(self.posting_repeat_enabled),
+                        "start_at": start_at,
+                        "account_tokens": list(self.posting_account_tokens),
+                        "rotation_enabled": bool(self.posting_rotation_enabled),
+                        "rotation_count": max(1, int(self.posting_rotation_count)),
+                        "current_index": int(self.current_posting_index),
+                        "count_since_rotation": int(self.posting_count_since_rotation),
+                        "_initialized": False,
+                    }
+                }
 
-        if self.posting_start_at is None:
-            start_delay = max(0, self.posting_start_delay)
-            if start_delay > 0:
-                self.posting_start_at = time.time() + start_delay
-            else:
-                self.posting_start_at = None
+            while self.posting_enabled:
+                try:
+                    contexts = self.workspace_posting_contexts if self.workspace_posting_contexts else (default_contexts or {})
 
-        active_tasks = get_active_posting_tasks()
-        if active_tasks and self.posting_start_at:
-            active_tasks[self.posting_task_cursor].next_run_at = self.posting_start_at
+                    if not contexts:
+                        self.runtime_posting_tasks = []
+                        await asyncio.sleep(1)
+                        continue
 
-        while self.posting_enabled:
-            try:
-                current_time = time.time()
-                active_tasks = get_active_posting_tasks()
+                    now = time.time()
+                    candidates = []
+                    all_runtime_tasks = []
 
-                if not active_tasks:
-                    await asyncio.sleep(2)
-                    continue
+                    for context_key, context in contexts.items():
+                        if not context.get("enabled", False):
+                            continue
 
-                if self.posting_task_cursor >= len(active_tasks):
-                    self.posting_task_cursor = 0
+                        tasks = context.get("tasks", [])
+                        all_runtime_tasks.extend(tasks)
 
-                scheduled_tasks = [task for task in active_tasks if task.next_run_at is not None]
-                if scheduled_tasks:
-                    task = min(scheduled_tasks, key=lambda t: t.next_run_at)
-                else:
-                    task = active_tasks[self.posting_task_cursor]
+                        active_tasks = [task for task in tasks if task.is_active]
+                        if not context.get("repeat_enabled", False):
+                            active_tasks = [task for task in active_tasks if getattr(task, "sent_count", 0) == 0]
 
-                if task.next_run_at is not None and current_time < task.next_run_at:
-                    sleep_seconds = max(1.0, min(5.0, task.next_run_at - current_time))
-                    await asyncio.sleep(sleep_seconds)
-                    continue
+                        if not active_tasks:
+                            continue
 
-                if self.log_callback:
-                    self.log_callback(f"📝 开始执行发帖任务: {task.id}")
-                success = await self.execute_posting_task(task)
+                        cursor = int(context.get("cursor", 0))
+                        if cursor >= len(active_tasks):
+                            cursor = 0
+                            context["cursor"] = 0
 
-                if success:
-                    if self.posting_repeat_enabled:
-                        if task in active_tasks:
-                            current_index = active_tasks.index(task)
+                        if not context.get("_initialized", False):
+                            start_at = context.get("start_at")
+                            if start_at is not None and start_at < now:
+                                start_at = None
+                                context["start_at"] = None
+                            if start_at is not None:
+                                active_tasks[cursor].next_run_at = start_at
+                            context["_initialized"] = True
+
+                        scheduled_tasks = [task for task in active_tasks if task.next_run_at is not None]
+                        target_task = min(scheduled_tasks, key=lambda t: t.next_run_at) if scheduled_tasks else active_tasks[cursor]
+                        due_at = target_task.next_run_at if target_task.next_run_at is not None else now
+                        candidates.append((due_at, context_key, context, target_task))
+
+                    self.runtime_posting_tasks = all_runtime_tasks
+
+                    if not candidates:
+                        await asyncio.sleep(1)
+                        continue
+
+                    due_at, context_key, context, task = min(candidates, key=lambda x: x[0])
+                    now = time.time()
+
+                    if due_at > now:
+                        sleep_seconds = max(1.0, min(5.0, due_at - now))
+                        await asyncio.sleep(sleep_seconds)
+                        continue
+
+                    context_name = context.get("name", context_key)
+                    if self.log_callback:
+                        self.log_callback(f"📝 [{context_name}] 开始执行发帖任务: {task.id}")
+
+                    success = await self.execute_posting_task(task, runtime=context)
+
+                    interval = max(0, int(context.get("posting_interval", self.posting_interval)))
+                    cycle_interval = max(0, int(context.get("cycle_interval", interval)))
+
+                    active_tasks = [t for t in context.get("tasks", []) if t.is_active]
+                    if not context.get("repeat_enabled", False):
+                        active_tasks = [t for t in active_tasks if getattr(t, "sent_count", 0) == 0]
+
+                    if success:
+                        if context.get("repeat_enabled", False):
+                            if active_tasks:
+                                if task in active_tasks:
+                                    current_index = active_tasks.index(task)
+                                else:
+                                    current_index = int(context.get("cursor", 0))
+                                next_index = (current_index + 1) % len(active_tasks)
+                                context["cursor"] = next_index
+                                task.next_run_at = None
+                                next_task = active_tasks[next_index]
+                                delay_seconds = cycle_interval if next_index == 0 else interval
+                                next_task.next_run_at = time.time() + delay_seconds
                         else:
-                            current_index = self.posting_task_cursor
-                        self.posting_task_cursor = (current_index + 1) % len(active_tasks)
-                        task.next_run_at = None
-                        next_task = active_tasks[self.posting_task_cursor]
-                        next_task.next_run_at = time.time() + max(0, self.posting_interval)
+                            task.next_run_at = None
+                            if active_tasks:
+                                if task in active_tasks:
+                                    current_index = active_tasks.index(task)
+                                else:
+                                    current_index = int(context.get("cursor", 0))
+                                if current_index >= len(active_tasks):
+                                    current_index = 0
+                                context["cursor"] = current_index
+                                next_task = active_tasks[current_index]
+                                next_task.next_run_at = time.time() + interval
                     else:
-                        task.next_run_at = None
-                        remaining_tasks = get_active_posting_tasks()
-                        if remaining_tasks:
-                            if task in active_tasks:
-                                current_index = active_tasks.index(task)
-                            else:
-                                current_index = self.posting_task_cursor
-                            if current_index >= len(remaining_tasks):
-                                current_index = 0
-                            self.posting_task_cursor = current_index
-                            next_task = remaining_tasks[self.posting_task_cursor]
-                            next_task.next_run_at = time.time() + max(0, self.posting_interval)
+                        if task.next_run_at is None:
+                            task.next_run_at = time.time() + interval
 
+                except Exception as e:
                     if self.log_callback:
-                        self.log_callback(f"📝 发帖任务 {task.id} 执行成功")
-                else:
-                    if task.next_run_at is None:
-                        task.next_run_at = time.time() + max(0, self.posting_interval)
-                    if self.log_callback:
-                        self.log_callback(f"📝 发帖任务 {task.id} 执行失败")
+                        self.log_callback(f"❌ 发帖调度器错误: {str(e)}")
 
-            except Exception as e:
-                if self.log_callback:
-                    self.log_callback(f"❌ 发帖调度器错误: {str(e)}")
+                await asyncio.sleep(1)
 
-            await asyncio.sleep(1)
+        finally:
+            if default_contexts and "default" in default_contexts:
+                default_context = default_contexts["default"]
+                self.current_posting_index = int(default_context.get("current_index", self.current_posting_index))
+                self.posting_count_since_rotation = int(default_context.get("count_since_rotation", self.posting_count_since_rotation))
+
+            self.runtime_posting_tasks = []
+            self.posting_scheduler_running = False
 
     async def start_comment_scheduler(self):
-        """启动评论调度器"""
-        # 等待至少有一个客户端登录成功
-        # 首先检查是否已经有登录的客户端
-        running_clients = [c for c in self.clients if c.is_running]
-        if running_clients and self.log_callback:
-            self.log_callback(f"💬 发现已有 {len(running_clients)} 个已登录客户端，开始处理评论任务")
-        else:
-            # 等待客户端登录，最多等待30秒
+        """启动评论调度器（支持多页面独立运行）"""
+        if self.comment_scheduler_running:
+            return
+        self.comment_scheduler_running = True
+
+        default_contexts = None
+
+        try:
+            running_clients = [c for c in self.clients if c.is_running]
             wait_count = 0
-            max_waits = 15  # 15次检查 = 30秒
-            while self.comment_enabled and wait_count < max_waits:
-                running_clients = [c for c in self.clients if c.is_running]
-                if running_clients:
-                    if self.log_callback:
-                        self.log_callback(f"💬 检测到 {len(running_clients)} 个已登录客户端，开始处理评论任务")
-                    break
-
+            max_waits = 15
+            while self.comment_enabled and not running_clients and wait_count < max_waits:
                 if self.log_callback:
-                    self.log_callback("⏳ 等待客户端登录完成...")
-                await asyncio.sleep(2)  # 每2秒检查一次
+                    self.log_callback("⏳ 评论调度器等待客户端登录...")
+                await asyncio.sleep(2)
                 wait_count += 1
+                running_clients = [c for c in self.clients if c.is_running]
 
-            # 如果等待超时但仍有任务，记录警告
-            if not running_clients and self.comment_enabled and self.comment_tasks and self.log_callback:
-                self.log_callback("⚠️ 等待客户端登录超时，将在客户端登录后重试任务执行")
+            if not self.workspace_comment_contexts:
+                runtime_tasks = [copy.deepcopy(task) for task in self.comment_tasks]
+                for task in runtime_tasks:
+                    if task.is_active:
+                        task.next_run_at = None
+                        task.sent_count = 0
 
-        # 重置任务倒计时，确保首条任务先发送
-        for task in self.comment_tasks:
-            if task.is_active:
-                task.next_run_at = None
-        self.comment_task_cursor = 0
+                start_at = self.comment_start_at
+                if start_at is None:
+                    start_delay = max(0, self.comment_start_delay)
+                    start_at = time.time() + start_delay if start_delay > 0 else None
 
-        def get_active_comment_tasks():
-            tasks = [task for task in self.comment_tasks if task.is_active]
-            if not self.comment_repeat_enabled:
-                tasks = [task for task in tasks if task.sent_count == 0]
-            return tasks
+                default_contexts = {
+                    "default": {
+                        "enabled": self.comment_enabled,
+                        "name": "默认页面",
+                        "tasks": runtime_tasks,
+                        "cursor": 0,
+                        "comment_interval": max(0, int(self.comment_interval)),
+                        "cycle_interval": max(0, int(self.comment_cycle_interval)),
+                        "repeat_enabled": bool(self.comment_repeat_enabled),
+                        "start_at": start_at,
+                        "comment_link_interval": max(0, int(self.comment_link_interval)),
+                        "account_tokens": list(self.comment_account_tokens),
+                        "rotation_enabled": bool(self.comment_rotation_enabled),
+                        "rotation_count": max(1, int(self.comment_rotation_count)),
+                        "current_index": int(self.current_comment_index),
+                        "count_since_rotation": int(self.comment_count_since_rotation),
+                        "_initialized": False,
+                    }
+                }
 
-        if self.comment_start_at is None:
-            start_delay = max(0, self.comment_start_delay)
-            if start_delay > 0:
-                self.comment_start_at = time.time() + start_delay
-            else:
-                self.comment_start_at = None
+            while self.comment_enabled:
+                try:
+                    contexts = self.workspace_comment_contexts if self.workspace_comment_contexts else (default_contexts or {})
 
-        active_tasks = get_active_comment_tasks()
-        if active_tasks and self.comment_start_at:
-            active_tasks[self.comment_task_cursor].next_run_at = self.comment_start_at
+                    if not contexts:
+                        self.runtime_comment_tasks = []
+                        await asyncio.sleep(1)
+                        continue
 
-        while self.comment_enabled:
-            try:
-                current_time = time.time()
-                active_tasks = get_active_comment_tasks()
+                    now = time.time()
+                    candidates = []
+                    all_runtime_tasks = []
 
-                if not active_tasks:
-                    await asyncio.sleep(2)
-                    continue
+                    for context_key, context in contexts.items():
+                        if not context.get("enabled", False):
+                            continue
 
-                if self.comment_task_cursor >= len(active_tasks):
-                    self.comment_task_cursor = 0
+                        tasks = context.get("tasks", [])
+                        all_runtime_tasks.extend(tasks)
 
-                scheduled_tasks = [task for task in active_tasks if task.next_run_at is not None]
-                if scheduled_tasks:
-                    task = min(scheduled_tasks, key=lambda t: t.next_run_at)
-                else:
-                    task = active_tasks[self.comment_task_cursor]
+                        active_tasks = [task for task in tasks if task.is_active]
+                        if not context.get("repeat_enabled", False):
+                            active_tasks = [task for task in active_tasks if getattr(task, "sent_count", 0) == 0]
 
-                if task.next_run_at is not None and current_time < task.next_run_at:
-                    sleep_seconds = max(1.0, min(5.0, task.next_run_at - current_time))
-                    await asyncio.sleep(sleep_seconds)
-                    continue
+                        if not active_tasks:
+                            continue
 
-                success = await self.execute_comment_task(task)
-                if success:
-                    if self.comment_repeat_enabled:
-                        if task in active_tasks:
-                            current_index = active_tasks.index(task)
+                        cursor = int(context.get("cursor", 0))
+                        if cursor >= len(active_tasks):
+                            cursor = 0
+                            context["cursor"] = 0
+
+                        if not context.get("_initialized", False):
+                            start_at = context.get("start_at")
+                            if start_at is not None and start_at < now:
+                                start_at = None
+                                context["start_at"] = None
+                            if start_at is not None:
+                                active_tasks[cursor].next_run_at = start_at
+                            context["_initialized"] = True
+
+                        scheduled_tasks = [task for task in active_tasks if task.next_run_at is not None]
+                        target_task = min(scheduled_tasks, key=lambda t: t.next_run_at) if scheduled_tasks else active_tasks[cursor]
+                        due_at = target_task.next_run_at if target_task.next_run_at is not None else now
+                        candidates.append((due_at, context_key, context, target_task))
+
+                    self.runtime_comment_tasks = all_runtime_tasks
+
+                    if not candidates:
+                        await asyncio.sleep(1)
+                        continue
+
+                    due_at, context_key, context, task = min(candidates, key=lambda x: x[0])
+                    now = time.time()
+
+                    if due_at > now:
+                        sleep_seconds = max(1.0, min(5.0, due_at - now))
+                        await asyncio.sleep(sleep_seconds)
+                        continue
+
+                    context_name = context.get("name", context_key)
+                    if self.log_callback:
+                        self.log_callback(f"💬 [{context_name}] 开始执行评论任务: {task.id}")
+
+                    success = await self.execute_comment_task(task, runtime=context)
+
+                    interval = max(0, int(context.get("comment_interval", self.comment_interval)))
+                    cycle_interval = max(0, int(context.get("cycle_interval", interval)))
+
+                    active_tasks = [t for t in context.get("tasks", []) if t.is_active]
+                    if not context.get("repeat_enabled", False):
+                        active_tasks = [t for t in active_tasks if getattr(t, "sent_count", 0) == 0]
+
+                    if success:
+                        if context.get("repeat_enabled", False):
+                            if active_tasks:
+                                if task in active_tasks:
+                                    current_index = active_tasks.index(task)
+                                else:
+                                    current_index = int(context.get("cursor", 0))
+                                next_index = (current_index + 1) % len(active_tasks)
+                                context["cursor"] = next_index
+                                task.next_run_at = None
+                                next_task = active_tasks[next_index]
+                                delay_seconds = cycle_interval if next_index == 0 else interval
+                                next_task.next_run_at = time.time() + delay_seconds
                         else:
-                            current_index = self.comment_task_cursor
-                        self.comment_task_cursor = (current_index + 1) % len(active_tasks)
-                        task.next_run_at = None
-                        next_task = active_tasks[self.comment_task_cursor]
-                        next_task.next_run_at = time.time() + max(0, self.comment_interval)
+                            task.next_run_at = None
+                            if active_tasks:
+                                if task in active_tasks:
+                                    current_index = active_tasks.index(task)
+                                else:
+                                    current_index = int(context.get("cursor", 0))
+                                if current_index >= len(active_tasks):
+                                    current_index = 0
+                                context["cursor"] = current_index
+                                next_task = active_tasks[current_index]
+                                next_task.next_run_at = time.time() + interval
                     else:
-                        task.next_run_at = None
-                        remaining_tasks = get_active_comment_tasks()
-                        if remaining_tasks:
-                            if task in active_tasks:
-                                current_index = active_tasks.index(task)
-                            else:
-                                current_index = self.comment_task_cursor
-                            if current_index >= len(remaining_tasks):
-                                current_index = 0
-                            self.comment_task_cursor = current_index
-                            next_task = remaining_tasks[self.comment_task_cursor]
-                            next_task.next_run_at = time.time() + max(0, self.comment_interval)
-                else:
-                    if task.next_run_at is None:
-                        task.next_run_at = time.time() + max(0, self.comment_interval)
+                        if task.next_run_at is None:
+                            task.next_run_at = time.time() + interval
 
-            except Exception as e:
-                if self.log_callback:
-                    self.log_callback(f"❌ 评论调度器错误: {str(e)}")
+                except Exception as e:
+                    if self.log_callback:
+                        self.log_callback(f"❌ 评论调度器错误: {str(e)}")
 
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
+
+        finally:
+            if default_contexts and "default" in default_contexts:
+                default_context = default_contexts["default"]
+                self.current_comment_index = int(default_context.get("current_index", self.current_comment_index))
+                self.comment_count_since_rotation = int(default_context.get("count_since_rotation", self.comment_count_since_rotation))
+
+            self.runtime_comment_tasks = []
+            self.comment_scheduler_running = False
 
 
 

@@ -4,6 +4,8 @@ import time
 import os
 import json
 import csv
+import copy
+import uuid
 from typing import List, Optional, Dict
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -14,7 +16,7 @@ from PySide6.QtWidgets import (
     QDialog, QMenu, QScrollArea, QFrame, QAbstractItemView
 )
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
-from PySide6.QtGui import QFont, QIcon, QColor
+from PySide6.QtGui import QFont, QIcon, QColor, QPixmap
 
 from .discord_client import DiscordManager, Account, Rule, MatchType
 from .config_manager import ConfigManager
@@ -716,6 +718,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("自动回复工具")
         self.setGeometry(100, 100, 1200, 800)
 
+        # 纯红色软件图标
+        red_pixmap = QPixmap(256, 256)
+        red_pixmap.fill(QColor(255, 0, 0))
+        self.setWindowIcon(QIcon(red_pixmap))
+
         # 创建中央部件
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -958,6 +965,14 @@ class MainWindow(QMainWindow):
         add_rule_btn.clicked.connect(self.add_rule)
         header_layout.addWidget(add_rule_btn)
 
+        import_rule_btn = QPushButton("自动读取")
+        import_rule_btn.clicked.connect(self.import_reply_materials)
+        header_layout.addWidget(import_rule_btn)
+
+        clear_rules_btn = QPushButton("一键删除")
+        clear_rules_btn.clicked.connect(self.clear_rules)
+        header_layout.addWidget(clear_rules_btn)
+
         layout.addLayout(header_layout)
 
         # 规则表格
@@ -1158,6 +1173,7 @@ class MainWindow(QMainWindow):
         self.posting_rotation_count_spin.setValue(10)  # 默认10条
         self.posting_rotation_count_spin.setSuffix("条")
         self.posting_rotation_count_spin.setEnabled(True)  # 发帖轮换条数设置始终可用，用户可以预设参数
+        self.posting_rotation_count_spin.valueChanged.connect(self.on_posting_rotation_count_changed)
         count_layout.addWidget(self.posting_rotation_count_spin)
         count_layout.addStretch()
         rotation_accounts_layout.addLayout(count_layout)
@@ -1203,6 +1219,17 @@ class MainWindow(QMainWindow):
         posting_interval_layout.addWidget(self.posting_interval_spin)
         posting_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(posting_interval_layout)
+
+        posting_cycle_layout = QHBoxLayout()
+        posting_cycle_layout.addWidget(QLabel("循环轮次间隔(秒):"))
+        self.posting_cycle_interval_spin = QSpinBox()
+        self.posting_cycle_interval_spin.setRange(0, 86400)
+        self.posting_cycle_interval_spin.setValue(getattr(self.discord_manager, "posting_cycle_interval", 30))
+        self.posting_cycle_interval_spin.setSuffix("秒")
+        self.posting_cycle_interval_spin.valueChanged.connect(self.on_posting_cycle_interval_changed)
+        posting_cycle_layout.addWidget(self.posting_cycle_interval_spin)
+        posting_cycle_layout.addStretch()
+        rotation_accounts_layout.addLayout(posting_cycle_layout)
 
         # 发帖启动倒计时
         posting_start_layout = QHBoxLayout()
@@ -1313,6 +1340,7 @@ class MainWindow(QMainWindow):
         self.comment_rotation_count_spin.setValue(10)  # 默认10条
         self.comment_rotation_count_spin.setSuffix("条")
         self.comment_rotation_count_spin.setEnabled(True)  # 评论轮换条数设置始终可用，用户可以预设参数
+        self.comment_rotation_count_spin.valueChanged.connect(self.on_comment_rotation_count_changed)
         count_layout.addWidget(self.comment_rotation_count_spin)
         count_layout.addStretch()
         rotation_accounts_layout.addLayout(count_layout)
@@ -1358,6 +1386,17 @@ class MainWindow(QMainWindow):
         comment_interval_layout.addWidget(self.comment_interval_spin)
         comment_interval_layout.addStretch()
         rotation_accounts_layout.addLayout(comment_interval_layout)
+
+        comment_cycle_layout = QHBoxLayout()
+        comment_cycle_layout.addWidget(QLabel("循环轮次间隔(秒):"))
+        self.comment_cycle_interval_spin = QSpinBox()
+        self.comment_cycle_interval_spin.setRange(0, 86400)
+        self.comment_cycle_interval_spin.setValue(getattr(self.discord_manager, "comment_cycle_interval", 30))
+        self.comment_cycle_interval_spin.setSuffix("秒")
+        self.comment_cycle_interval_spin.valueChanged.connect(self.on_comment_cycle_interval_changed)
+        comment_cycle_layout.addWidget(self.comment_cycle_interval_spin)
+        comment_cycle_layout.addStretch()
+        rotation_accounts_layout.addLayout(comment_cycle_layout)
 
         # 评论启动倒计时
         comment_start_layout = QHBoxLayout()
@@ -1413,6 +1452,10 @@ class MainWindow(QMainWindow):
         add_comment_btn = QPushButton("添加评论任务")
         add_comment_btn.clicked.connect(self.add_comment_task)
         search_layout.addWidget(add_comment_btn)
+
+        import_comment_btn = QPushButton("自动读取")
+        import_comment_btn.clicked.connect(self.import_comment_materials)
+        search_layout.addWidget(import_comment_btn)
 
         clear_comment_btn = QPushButton("一键删除")
         clear_comment_btn.clicked.connect(self.clear_comment_tasks)
@@ -1602,13 +1645,18 @@ class MainWindow(QMainWindow):
 
         if not self.workspaces:
             self.workspaces = [{
+                "id": self.generate_workspace_id(),
                 "name": "工具1",
                 "rules": self.discord_manager.rules,
                 "posting_tasks": self.discord_manager.posting_tasks,
                 "comment_tasks": self.discord_manager.comment_tasks,
-                "rotation": rotation_config or {}
+                "rotation": rotation_config or {},
+                "features": self.default_workspace_features()
             }]
             self.active_workspace_index = 0
+
+        for index, ws in enumerate(self.workspaces):
+            self.ensure_workspace_defaults(ws, index)
 
         # 许可证配置（固定服务器，不使用认证信息）
         license_key = license_config.get("license_key", "").strip()
@@ -1620,9 +1668,9 @@ class MainWindow(QMainWindow):
         license_info = license_config.get("license_info")
         if saved_hwid:
             self.discord_manager.license_manager.machine_fingerprint = saved_hwid
-        current_hwid = self.discord_manager.license_manager.machine_fingerprint
 
-        if license_key and is_activated and saved_hwid == current_hwid:
+        # 优先信任本地已激活状态，避免重启后重复要求输入密钥
+        if license_key and is_activated:
             self.discord_manager.license_manager.license_key = license_key
             self.discord_manager.license_manager.is_activated = True
             if isinstance(license_info, dict):
@@ -1648,6 +1696,210 @@ class MainWindow(QMainWindow):
         # 初始化工作区标签
         self.refresh_workspace_tabs()
 
+        # 根据各页面开关重建运行上下文（支持多页面独立运行）
+        self.refresh_runtime_contexts_from_workspaces()
+
+    def generate_workspace_id(self) -> str:
+        """生成页面唯一ID"""
+        return f"ws_{uuid.uuid4().hex[:12]}"
+
+    def default_workspace_features(self) -> Dict:
+        """页面默认开关配置"""
+        return {
+            "reply_enabled": False,
+            "posting_enabled": False,
+            "comment_enabled": False,
+            "reply_start_at": None,
+            "posting_start_at": None,
+            "comment_start_at": None,
+        }
+
+    def ensure_workspace_defaults(self, workspace: Dict, index: int):
+        """补齐页面配置缺失字段"""
+        if not workspace.get("id"):
+            workspace["id"] = self.generate_workspace_id()
+
+        features = workspace.get("features", {}) or {}
+        default_features = self.default_workspace_features()
+        for key, value in default_features.items():
+            features.setdefault(key, value)
+
+        # 旧版本可能残留过去的倒计时时间戳，启动时重置为未启动
+        for key in ("reply_start_at", "posting_start_at", "comment_start_at"):
+            if features.get(key) and features.get(key) < time.time():
+                features[key] = None
+
+        workspace["features"] = features
+
+    def get_active_workspace(self) -> Optional[Dict]:
+        """获取当前页面对象"""
+        if not self.workspaces:
+            return None
+        if not (0 <= self.active_workspace_index < len(self.workspaces)):
+            return None
+        return self.workspaces[self.active_workspace_index]
+
+    def get_active_workspace_features(self) -> Dict:
+        """获取当前页面功能开关"""
+        workspace = self.get_active_workspace()
+        if workspace is None:
+            return self.default_workspace_features()
+        self.ensure_workspace_defaults(workspace, self.active_workspace_index)
+        return workspace.get("features", self.default_workspace_features())
+
+    def refresh_runtime_contexts_from_workspaces(self):
+        """根据页面配置刷新运行上下文（发帖/评论/回复）"""
+        previous_posting_contexts = getattr(self.discord_manager, "workspace_posting_contexts", {}) or {}
+        previous_comment_contexts = getattr(self.discord_manager, "workspace_comment_contexts", {}) or {}
+
+        posting_contexts = {}
+        comment_contexts = {}
+        reply_contexts = {}
+
+        any_reply_enabled = False
+        any_posting_enabled = False
+        any_comment_enabled = False
+
+        for index, workspace in enumerate(self.workspaces):
+            self.ensure_workspace_defaults(workspace, index)
+
+            workspace_id = workspace.get("id")
+            workspace_name = workspace.get("name", f"工具{index + 1}")
+            features = workspace.get("features", {})
+            rotation = workspace.get("rotation", {}) or {}
+
+            if features.get("reply_enabled"):
+                any_reply_enabled = True
+                reply_contexts[workspace_id] = {
+                    "enabled": True,
+                    "name": workspace_name,
+                    "start_at": features.get("reply_start_at"),
+                    "rules": workspace.get("rules", []),
+                }
+
+            if features.get("posting_enabled"):
+                any_posting_enabled = True
+                start_at = features.get("posting_start_at")
+                previous_context = previous_posting_contexts.get(workspace_id)
+
+                if previous_context:
+                    context = previous_context
+                    context["enabled"] = True
+                    context["name"] = workspace_name
+                    context["start_at"] = start_at
+                    context["posting_interval"] = max(0, int(rotation.get("posting_interval", 30)))
+                    context["cycle_interval"] = max(0, int(rotation.get("posting_cycle_interval", context.get("posting_interval", 30))))
+                    context["repeat_enabled"] = bool(rotation.get("posting_repeat_enabled", False))
+                    context["account_tokens"] = list(rotation.get("posting_account_tokens", []) or [])
+                    context["rotation_enabled"] = bool(rotation.get("posting_rotation_enabled", False))
+                    context["rotation_count"] = max(1, int(rotation.get("posting_rotation_count", 10)))
+                else:
+                    runtime_tasks = [copy.deepcopy(task) for task in workspace.get("posting_tasks", [])]
+                    for task in runtime_tasks:
+                        if task.is_active:
+                            task.next_run_at = None
+                            task.sent_count = 0
+
+                    context = {
+                        "enabled": True,
+                        "name": workspace_name,
+                        "tasks": runtime_tasks,
+                        "cursor": 0,
+                        "posting_interval": max(0, int(rotation.get("posting_interval", 30))),
+                        "cycle_interval": max(0, int(rotation.get("posting_cycle_interval", 30))),
+                        "repeat_enabled": bool(rotation.get("posting_repeat_enabled", False)),
+                        "start_at": start_at,
+                        "account_tokens": list(rotation.get("posting_account_tokens", []) or []),
+                        "rotation_enabled": bool(rotation.get("posting_rotation_enabled", False)),
+                        "rotation_count": max(1, int(rotation.get("posting_rotation_count", 10))),
+                        "current_index": 0,
+                        "count_since_rotation": 0,
+                        "_initialized": False,
+                    }
+
+                posting_contexts[workspace_id] = context
+
+            if features.get("comment_enabled"):
+                any_comment_enabled = True
+                start_at = features.get("comment_start_at")
+                previous_context = previous_comment_contexts.get(workspace_id)
+
+                if previous_context:
+                    context = previous_context
+                    context["enabled"] = True
+                    context["name"] = workspace_name
+                    context["start_at"] = start_at
+                    context["comment_interval"] = max(0, int(rotation.get("comment_interval", 30)))
+                    context["cycle_interval"] = max(0, int(rotation.get("comment_cycle_interval", context.get("comment_interval", 30))))
+                    context["repeat_enabled"] = bool(rotation.get("comment_repeat_enabled", False))
+                    context["comment_link_interval"] = max(0, int(rotation.get("comment_link_interval", 5)))
+                    context["account_tokens"] = list(rotation.get("comment_account_tokens", []) or [])
+                    context["rotation_enabled"] = bool(rotation.get("comment_rotation_enabled", False))
+                    context["rotation_count"] = max(1, int(rotation.get("comment_rotation_count", 10)))
+                else:
+                    runtime_tasks = [copy.deepcopy(task) for task in workspace.get("comment_tasks", [])]
+                    for task in runtime_tasks:
+                        if task.is_active:
+                            task.next_run_at = None
+                            task.sent_count = 0
+
+                    context = {
+                        "enabled": True,
+                        "name": workspace_name,
+                        "tasks": runtime_tasks,
+                        "cursor": 0,
+                        "comment_interval": max(0, int(rotation.get("comment_interval", 30))),
+                        "cycle_interval": max(0, int(rotation.get("comment_cycle_interval", 30))),
+                        "repeat_enabled": bool(rotation.get("comment_repeat_enabled", False)),
+                        "start_at": start_at,
+                        "comment_link_interval": max(0, int(rotation.get("comment_link_interval", 5))),
+                        "account_tokens": list(rotation.get("comment_account_tokens", []) or []),
+                        "rotation_enabled": bool(rotation.get("comment_rotation_enabled", False)),
+                        "rotation_count": max(1, int(rotation.get("comment_rotation_count", 10))),
+                        "current_index": 0,
+                        "count_since_rotation": 0,
+                        "_initialized": False,
+                    }
+
+                comment_contexts[workspace_id] = context
+
+        self.discord_manager.workspace_posting_contexts = posting_contexts
+        self.discord_manager.workspace_comment_contexts = comment_contexts
+        self.discord_manager.workspace_reply_contexts = reply_contexts
+        self.discord_manager.reply_rule_pool = self.discord_manager.get_active_reply_rules()
+
+        self.discord_manager.reply_enabled = any_reply_enabled
+        self.discord_manager.posting_enabled = any_posting_enabled
+        self.discord_manager.comment_enabled = any_comment_enabled
+
+        # 兼容旧逻辑：保留一份平铺任务用于状态显示
+        self.discord_manager.runtime_posting_tasks = [
+            task
+            for context in posting_contexts.values()
+            for task in context.get("tasks", [])
+        ]
+        self.discord_manager.runtime_comment_tasks = [
+            task
+            for context in comment_contexts.values()
+            for task in context.get("tasks", [])
+        ]
+
+        if self.discord_manager.is_running:
+            for client in self.discord_manager.clients:
+                client.rules = self.discord_manager.get_active_reply_rules()
+
+            if self.discord_manager.posting_enabled:
+                try:
+                    asyncio.create_task(self.discord_manager.start_posting_scheduler())
+                except RuntimeError:
+                    pass
+
+            if self.discord_manager.comment_enabled:
+                try:
+                    asyncio.create_task(self.discord_manager.start_comment_scheduler())
+                except RuntimeError:
+                    pass
+
     def apply_rotation_config(self, rotation_config: Dict):
         """应用轮换/间隔/默认配置到管理器"""
         if not rotation_config:
@@ -1659,7 +1911,9 @@ class MainWindow(QMainWindow):
         self.discord_manager.comment_rotation_enabled = rotation_config.get("comment_rotation_enabled", False)
         self.discord_manager.comment_rotation_count = rotation_config.get("comment_rotation_count", 10)
         self.discord_manager.posting_interval = rotation_config.get("posting_interval", 30)  # 默认30秒
+        self.discord_manager.posting_cycle_interval = rotation_config.get("posting_cycle_interval", 30)
         self.discord_manager.comment_interval = rotation_config.get("comment_interval", 30)  # 默认30秒
+        self.discord_manager.comment_cycle_interval = rotation_config.get("comment_cycle_interval", 30)
         self.discord_manager.posting_repeat_enabled = rotation_config.get("posting_repeat_enabled", False)
         self.discord_manager.comment_repeat_enabled = rotation_config.get("comment_repeat_enabled", False)
         self.discord_manager.comment_link_interval = rotation_config.get("comment_link_interval", 5)
@@ -1676,32 +1930,39 @@ class MainWindow(QMainWindow):
 
     def sync_rotation_controls(self):
         """将管理器配置同步到界面控件"""
-        if hasattr(self, 'posting_interval_spin'):
+        if hasattr(self, "posting_interval_spin"):
             self.posting_interval_spin.setValue(self.discord_manager.posting_interval)
-        if hasattr(self, 'comment_interval_spin'):
+        if hasattr(self, "posting_cycle_interval_spin"):
+            self.posting_cycle_interval_spin.setValue(getattr(self.discord_manager, "posting_cycle_interval", 30))
+        if hasattr(self, "comment_interval_spin"):
             self.comment_interval_spin.setValue(self.discord_manager.comment_interval)
-        if hasattr(self, 'posting_repeat_checkbox'):
+        if hasattr(self, "comment_cycle_interval_spin"):
+            self.comment_cycle_interval_spin.setValue(getattr(self.discord_manager, "comment_cycle_interval", 30))
+        if hasattr(self, "posting_repeat_checkbox"):
             self.posting_repeat_checkbox.setChecked(self.discord_manager.posting_repeat_enabled)
-        if hasattr(self, 'comment_repeat_checkbox'):
+        if hasattr(self, "comment_repeat_checkbox"):
             self.comment_repeat_checkbox.setChecked(self.discord_manager.comment_repeat_enabled)
-        if hasattr(self, 'posting_default_channel_input'):
+        if hasattr(self, "posting_default_channel_input"):
             if self.discord_manager.default_posting_channel_id:
                 self.posting_default_channel_input.setText(str(self.discord_manager.default_posting_channel_id))
             else:
                 self.posting_default_channel_input.clear()
-        if hasattr(self, 'posting_default_tags_input'):
+        if hasattr(self, "posting_default_tags_input"):
             if self.discord_manager.default_posting_tags:
                 self.posting_default_tags_input.setText(", ".join(self.discord_manager.default_posting_tags))
             else:
                 self.posting_default_tags_input.clear()
-        if hasattr(self, 'comment_link_interval_spin'):
+        if hasattr(self, "comment_link_interval_spin"):
             self.comment_link_interval_spin.setValue(self.discord_manager.comment_link_interval)
-        if hasattr(self, 'posting_start_delay_spin'):
+        if hasattr(self, "posting_start_delay_spin"):
             self.posting_start_delay_spin.setValue(getattr(self.discord_manager, "posting_start_delay", 0))
-        if hasattr(self, 'comment_start_delay_spin'):
+        if hasattr(self, "comment_start_delay_spin"):
             self.comment_start_delay_spin.setValue(getattr(self.discord_manager, "comment_start_delay", 0))
-        if hasattr(self, 'reply_start_delay_spin'):
+        if hasattr(self, "reply_start_delay_spin"):
             self.reply_start_delay_spin.setValue(getattr(self.discord_manager, "reply_start_delay", 0))
+
+        # 页面切换时同步账号下拉框
+        self.update_global_accounts_combo()
 
     def collect_rotation_config(self) -> Dict:
         """从管理器收集轮换/间隔/默认配置"""
@@ -1713,7 +1974,9 @@ class MainWindow(QMainWindow):
             "comment_rotation_enabled": self.discord_manager.comment_rotation_enabled,
             "comment_rotation_count": self.discord_manager.comment_rotation_count,
             "posting_interval": self.discord_manager.posting_interval,
+            "posting_cycle_interval": getattr(self.discord_manager, "posting_cycle_interval", 30),
             "comment_interval": self.discord_manager.comment_interval,
+            "comment_cycle_interval": getattr(self.discord_manager, "comment_cycle_interval", 30),
             "posting_repeat_enabled": self.discord_manager.posting_repeat_enabled,
             "comment_repeat_enabled": self.discord_manager.comment_repeat_enabled,
             "comment_link_interval": self.discord_manager.comment_link_interval,
@@ -1743,7 +2006,8 @@ class MainWindow(QMainWindow):
         self.workspace_tabbar.blockSignals(True)
         while self.workspace_tabbar.count() > 0:
             self.workspace_tabbar.removeTab(0)
-        for ws in self.workspaces:
+        for i, ws in enumerate(self.workspaces):
+            self.ensure_workspace_defaults(ws, i)
             self.workspace_tabbar.addTab(ws.get("name", "工具"))
         if 0 <= self.active_workspace_index < self.workspace_tabbar.count():
             self.workspace_tabbar.setCurrentIndex(self.active_workspace_index)
@@ -1754,16 +2018,26 @@ class MainWindow(QMainWindow):
         if not self.workspaces:
             return
         ws = self.workspaces[self.active_workspace_index]
+        self.ensure_workspace_defaults(ws, self.active_workspace_index)
         ws["rules"] = self.discord_manager.rules
         ws["posting_tasks"] = self.discord_manager.posting_tasks
         ws["comment_tasks"] = self.discord_manager.comment_tasks
         ws["rotation"] = self.collect_rotation_config()
+        features = ws.get("features", self.default_workspace_features())
+        if hasattr(self, "reply_toggle_button"):
+            features["reply_enabled"] = self.reply_toggle_button.isChecked()
+        if hasattr(self, "posting_toggle_button"):
+            features["posting_enabled"] = self.posting_toggle_button.isChecked()
+        if hasattr(self, "comment_toggle_button"):
+            features["comment_enabled"] = self.comment_toggle_button.isChecked()
+        ws["features"] = features
 
     def load_workspace(self, index: int):
         """加载指定工作区到管理器"""
         if not (0 <= index < len(self.workspaces)):
             return
         ws = self.workspaces[index]
+        self.ensure_workspace_defaults(ws, index)
         self.discord_manager.rules = ws.get("rules", [])
         self.discord_manager.posting_tasks = ws.get("posting_tasks", [])
         self.discord_manager.comment_tasks = ws.get("comment_tasks", [])
@@ -1779,16 +2053,20 @@ class MainWindow(QMainWindow):
         """切换工作区"""
         if index == self.active_workspace_index or index < 0:
             return
-        # 运行中不允许切换，避免任务混乱
-        if (self.discord_manager.reply_enabled or self.discord_manager.posting_enabled or
-                self.discord_manager.comment_enabled):
-            QMessageBox.warning(self, "提示", "请先关闭自动回复/发帖/评论后再切换页面")
-            self.workspace_tabbar.setCurrentIndex(self.active_workspace_index)
-            return
+
+        was_running = (
+            self.discord_manager.reply_enabled
+            or self.discord_manager.posting_enabled
+            or self.discord_manager.comment_enabled
+        )
+
         self.sync_current_workspace()
         self.active_workspace_index = index
         self.load_workspace(index)
         self.save_config()
+
+        if was_running:
+            self.add_log("已切换页面：当前运行中的任务继续执行，新页面可继续编辑", "info")
 
     def add_workspace(self):
         """新增工作区"""
@@ -1796,11 +2074,13 @@ class MainWindow(QMainWindow):
         new_index = len(self.workspaces) + 1
         new_name = f"工具{new_index}"
         self.workspaces.append({
+            "id": self.generate_workspace_id(),
             "name": new_name,
             "rules": [],
             "posting_tasks": [],
             "comment_tasks": [],
-            "rotation": self.collect_rotation_config()
+            "rotation": self.collect_rotation_config(),
+            "features": self.default_workspace_features()
         })
         self.refresh_workspace_tabs()
         self.workspace_tabbar.setCurrentIndex(len(self.workspaces) - 1)
@@ -1847,24 +2127,23 @@ class MainWindow(QMainWindow):
 
     def update_function_buttons(self):
         """更新功能按钮状态"""
-        # 自动回复默认关闭（根据DiscordManager的默认状态）
-        self.reply_toggle_button.setChecked(self.discord_manager.reply_enabled)
-        if self.discord_manager.reply_enabled:
+        features = self.get_active_workspace_features()
+
+        self.reply_toggle_button.setChecked(bool(features.get("reply_enabled", False)))
+        if self.reply_toggle_button.isChecked():
             self.reply_toggle_button.setText("📝 自动回复: 开启")
         else:
             self.reply_toggle_button.setText("📝 自动回复: 关闭")
 
-        # 自动发帖状态
-        self.posting_toggle_button.setChecked(self.discord_manager.posting_enabled)
-        if self.discord_manager.posting_enabled:
+        self.posting_toggle_button.setChecked(bool(features.get("posting_enabled", False)))
+        if self.posting_toggle_button.isChecked():
             self.posting_toggle_button.setText("📄 自动发帖: 开启")
         else:
             self.posting_toggle_button.setText("📄 自动发帖: 关闭")
         self.posting_interval_spin.setEnabled(True)  # 发帖间隔设置始终可用，用户可以预设参数
 
-        # 自动评论状态
-        self.comment_toggle_button.setChecked(self.discord_manager.comment_enabled)
-        if self.discord_manager.comment_enabled:
+        self.comment_toggle_button.setChecked(bool(features.get("comment_enabled", False)))
+        if self.comment_toggle_button.isChecked():
             self.comment_toggle_button.setText("💬 自动评论: 开启")
         else:
             self.comment_toggle_button.setText("💬 自动评论: 关闭")
@@ -2289,18 +2568,32 @@ class MainWindow(QMainWindow):
         """刷新发帖/评论任务倒计时显示"""
         now = time.time()
 
+        runtime_posting = {}
+        if self.discord_manager.posting_enabled and self.discord_manager.runtime_posting_tasks:
+            runtime_posting = {task.id: task for task in self.discord_manager.runtime_posting_tasks}
+
+        runtime_comment = {}
+        if self.discord_manager.comment_enabled and self.discord_manager.runtime_comment_tasks:
+            runtime_comment = {task.id: task for task in self.discord_manager.runtime_comment_tasks}
+
         for row, task in enumerate(self.discord_manager.posting_tasks):
             if row >= self.posting_tasks_table.rowCount():
                 break
-            status_text = "激活" if task.is_active else "禁用"
-            if task.is_active:
-                if not self.discord_manager.posting_repeat_enabled and getattr(task, "sent_count", 0) > 0:
+            runtime_task = runtime_posting.get(task.id, task)
+            is_active = bool(getattr(runtime_task, "is_active", task.is_active))
+            sent_count = getattr(runtime_task, "sent_count", getattr(task, "sent_count", 0))
+            next_run_at = getattr(runtime_task, "next_run_at", None)
+
+            status_text = "激活" if is_active else "禁用"
+            if is_active:
+                if not self.discord_manager.posting_repeat_enabled and sent_count > 0:
                     status_text = "已发送"
-                elif task.next_run_at is not None:
-                    remaining = max(0, int(task.next_run_at - now))
+                elif next_run_at is not None:
+                    remaining = max(0, int(next_run_at - now))
                     status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
                 else:
                     status_text = "激活 | 待发送"
+
             status_item = self.posting_tasks_table.item(row, 4)
             if status_item:
                 status_item.setText(status_text)
@@ -2308,15 +2601,21 @@ class MainWindow(QMainWindow):
         for row, task in enumerate(self.discord_manager.comment_tasks):
             if row >= self.comment_tasks_table.rowCount():
                 break
-            status_text = "激活" if task.is_active else "禁用"
-            if task.is_active:
-                if not self.discord_manager.comment_repeat_enabled and getattr(task, "sent_count", 0) > 0:
+            runtime_task = runtime_comment.get(task.id, task)
+            is_active = bool(getattr(runtime_task, "is_active", task.is_active))
+            sent_count = getattr(runtime_task, "sent_count", getattr(task, "sent_count", 0))
+            next_run_at = getattr(runtime_task, "next_run_at", None)
+
+            status_text = "激活" if is_active else "禁用"
+            if is_active:
+                if not self.discord_manager.comment_repeat_enabled and sent_count > 0:
                     status_text = "已发送"
-                elif task.next_run_at is not None:
-                    remaining = max(0, int(task.next_run_at - now))
+                elif next_run_at is not None:
+                    remaining = max(0, int(next_run_at - now))
                     status_text = f"激活 | 倒计时: {remaining}秒" if remaining > 0 else "激活 | 待发送"
                 else:
                     status_text = "激活 | 待发送"
+
             status_item = self.comment_tasks_table.item(row, 3)
             if status_item:
                 status_item.setText(status_text)
@@ -2328,32 +2627,45 @@ class MainWindow(QMainWindow):
         if now is None:
             now = time.time()
 
+        features = self.get_active_workspace_features()
+
+        def has_enabled_in_any_workspace(feature_key: str) -> bool:
+            for index, workspace in enumerate(self.workspaces):
+                self.ensure_workspace_defaults(workspace, index)
+                ws_features = workspace.get("features", {})
+                if ws_features.get(feature_key):
+                    return True
+            return False
+
+        def get_label_text(feature_key: str, start_key: str) -> str:
+            enabled_current = bool(features.get(feature_key, False))
+            enabled_any = has_enabled_in_any_workspace(feature_key)
+
+            if not enabled_current:
+                if enabled_any:
+                    return "启动倒计时: 当前页未启用（其他页面运行中）"
+                return "启动倒计时: 未启用"
+
+            start_at = features.get(start_key)
+            if start_at and now < start_at:
+                remaining = max(0, int(start_at - now))
+                return f"启动倒计时: {remaining}秒"
+            return "启动倒计时: 已启动"
+
         if hasattr(self, 'posting_start_countdown_label'):
-            if not self.discord_manager.posting_enabled:
-                self.posting_start_countdown_label.setText("启动倒计时: 未启用")
-            elif self.discord_manager.posting_start_at and now < self.discord_manager.posting_start_at:
-                remaining = max(0, int(self.discord_manager.posting_start_at - now))
-                self.posting_start_countdown_label.setText(f"启动倒计时: {remaining}秒")
-            else:
-                self.posting_start_countdown_label.setText("启动倒计时: 已启动")
+            self.posting_start_countdown_label.setText(
+                get_label_text("posting_enabled", "posting_start_at")
+            )
 
         if hasattr(self, 'comment_start_countdown_label'):
-            if not self.discord_manager.comment_enabled:
-                self.comment_start_countdown_label.setText("启动倒计时: 未启用")
-            elif self.discord_manager.comment_start_at and now < self.discord_manager.comment_start_at:
-                remaining = max(0, int(self.discord_manager.comment_start_at - now))
-                self.comment_start_countdown_label.setText(f"启动倒计时: {remaining}秒")
-            else:
-                self.comment_start_countdown_label.setText("启动倒计时: 已启动")
+            self.comment_start_countdown_label.setText(
+                get_label_text("comment_enabled", "comment_start_at")
+            )
 
         if hasattr(self, 'reply_start_countdown_label'):
-            if not self.discord_manager.reply_enabled:
-                self.reply_start_countdown_label.setText("启动倒计时: 未启用")
-            elif self.discord_manager.reply_start_at and now < self.discord_manager.reply_start_at:
-                remaining = max(0, int(self.discord_manager.reply_start_at - now))
-                self.reply_start_countdown_label.setText(f"启动倒计时: {remaining}秒")
-            else:
-                self.reply_start_countdown_label.setText("启动倒计时: 已启动")
+            self.reply_start_countdown_label.setText(
+                get_label_text("reply_enabled", "reply_start_at")
+            )
 
     def show_accounts_context_menu(self, position):
         """显示账号右键菜单"""
@@ -2519,8 +2831,20 @@ class MainWindow(QMainWindow):
 
         def parse_tokens(raw_text: str) -> List[str]:
             import re
-            parts = re.split(r"[\\s,;]+", raw_text.strip())
-            tokens = [p.strip() for p in parts if p.strip()]
+            parts = re.split(r"[\s,;，；]+", raw_text.strip())
+            tokens = []
+            for part in parts:
+                item = part.strip()
+                if not item:
+                    continue
+
+                # 支持“序号:账号”“名称----账号”等批量格式，优先取最后一段
+                for separator in ("----", "|", ":", "："):
+                    if separator in item:
+                        item = item.split(separator)[-1].strip()
+
+                if item:
+                    tokens.append(item)
             # 去重且保持顺序
             seen = set()
             ordered = []
@@ -2686,6 +3010,7 @@ class MainWindow(QMainWindow):
         if current_index == 0:
             # 随机使用所有账号
             self.discord_manager.posting_account_tokens = []
+            self.refresh_runtime_contexts_from_workspaces()
             self.save_config()
             QMessageBox.information(self, "提示", "发帖任务将随机使用所有可用账号")
         else:
@@ -2695,6 +3020,7 @@ class MainWindow(QMainWindow):
             if selected_account_index < len(valid_accounts):
                 selected_account = valid_accounts[selected_account_index]
                 self.discord_manager.posting_account_tokens = [selected_account.token]
+                self.refresh_runtime_contexts_from_workspaces()
                 self.save_config()
                 QMessageBox.information(self, "提示", f"发帖任务仅使用账号：{selected_account.alias}")
             else:
@@ -2707,6 +3033,7 @@ class MainWindow(QMainWindow):
         if current_index == 0:
             # 随机使用所有账号
             self.discord_manager.comment_account_tokens = []
+            self.refresh_runtime_contexts_from_workspaces()
             self.save_config()
             QMessageBox.information(self, "提示", "评论任务将随机使用所有可用账号")
         else:
@@ -2716,6 +3043,7 @@ class MainWindow(QMainWindow):
             if selected_account_index < len(valid_accounts):
                 selected_account = valid_accounts[selected_account_index]
                 self.discord_manager.comment_account_tokens = [selected_account.token]
+                self.refresh_runtime_contexts_from_workspaces()
                 self.save_config()
                 QMessageBox.information(self, "提示", f"评论任务仅使用账号：{selected_account.alias}")
             else:
@@ -2984,12 +3312,46 @@ class MainWindow(QMainWindow):
             self.save_config()
             self.add_log(f"成功删除 {deleted_count} 个规则", "success")
 
+    def clear_rules(self):
+        """一键删除所有自动回复规则"""
+        if not self.discord_manager.rules:
+            QMessageBox.information(self, "提示", "当前没有自动回复规则")
+            return
+
+        reply = QMessageBox.question(
+            self, "确认删除",
+            "确定要删除所有自动回复规则吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.discord_manager.rules.clear()
+            self.update_rules_list()
+            self.save_config()
+            self.add_log("所有自动回复规则已删除", "info")
 
 
+
+
+    def has_enabled_reply_rules(self) -> bool:
+        """检查所有已启用自动回复的页面是否至少配置了一条规则"""
+        if self.workspaces:
+            for index, workspace in enumerate(self.workspaces):
+                self.ensure_workspace_defaults(workspace, index)
+                features = workspace.get("features", {})
+                if features.get("reply_enabled") and workspace.get("rules"):
+                    return True
+            return False
+
+        return bool(self.discord_manager.rules)
 
     def start_bot(self):
         """启动账号"""
         self.add_log("🔄 正在检查启动条件...", "info")
+
+        # 启动前刷新一次多页面运行上下文
+        self.refresh_runtime_contexts_from_workspaces()
 
         if not self.discord_manager.accounts:
             self.add_log("❌ 启动失败：请先添加至少一个账号", "error")
@@ -2997,7 +3359,7 @@ class MainWindow(QMainWindow):
             return
 
         # 只有启用自动回复功能时才需要检查规则
-        if self.discord_manager.reply_enabled and not self.discord_manager.rules:
+        if self.discord_manager.reply_enabled and not self.has_enabled_reply_rules():
             self.add_log("❌ 启动失败：启用自动回复功能时请先添加至少一个规则", "error")
             QMessageBox.warning(self, "错误", "启用自动回复功能时请先添加至少一个规则")
             return
@@ -3368,18 +3730,27 @@ class MainWindow(QMainWindow):
     def toggle_auto_reply(self):
         """切换自动回复功能"""
         is_checked = self.reply_toggle_button.isChecked()
-        self.discord_manager.reply_enabled = is_checked
+        workspace = self.get_active_workspace()
+        if workspace is None:
+            return
+
+        features = self.get_active_workspace_features()
+        features["reply_enabled"] = is_checked
+
         if is_checked:
             delay = max(0, getattr(self.discord_manager, "reply_start_delay", 0))
-            self.discord_manager.reply_start_at = time.time() + delay if delay > 0 else None
+            features["reply_start_at"] = time.time() + delay if delay > 0 else None
         else:
-            self.discord_manager.reply_start_at = None
+            features["reply_start_at"] = None
+
+        workspace["features"] = features
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
         if is_checked:
             self.reply_toggle_button.setText("📝 自动回复: 开启")
-            if self.discord_manager.reply_start_at:
-                remaining = int(self.discord_manager.reply_start_at - time.time())
+            if features.get("reply_start_at"):
+                remaining = int(features["reply_start_at"] - time.time())
                 self.add_log(f"自动回复已开启，将在 {max(0, remaining)} 秒后启动", "info")
             else:
                 self.add_log("自动回复已开启", "info")
@@ -3390,32 +3761,30 @@ class MainWindow(QMainWindow):
     def toggle_auto_posting(self):
         """切换自动发帖功能"""
         is_checked = self.posting_toggle_button.isChecked()
-        # 发帖间隔始终可用，让用户可以预设参数
-        # self.posting_interval_spin.setEnabled(is_checked)
-        self.discord_manager.posting_enabled = is_checked
+        workspace = self.get_active_workspace()
+        if workspace is None:
+            return
+
+        features = self.get_active_workspace_features()
+        features["posting_enabled"] = is_checked
+
         if is_checked:
             delay = max(0, getattr(self.discord_manager, "posting_start_delay", 0))
-            self.discord_manager.posting_start_at = time.time() + delay if delay > 0 else None
+            features["posting_start_at"] = time.time() + delay if delay > 0 else None
         else:
-            self.discord_manager.posting_start_at = None
+            features["posting_start_at"] = None
+
+        workspace["features"] = features
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
         if is_checked:
-            for task in self.discord_manager.posting_tasks:
-                if task.is_active:
-                    task.next_run_at = None
-            self.discord_manager.posting_task_cursor = 0
             self.posting_toggle_button.setText("📄 自动发帖: 开启")
-            if self.discord_manager.posting_start_at:
-                remaining = int(self.discord_manager.posting_start_at - time.time())
+            if features.get("posting_start_at"):
+                remaining = int(features["posting_start_at"] - time.time())
                 self.add_log(f"自动发帖已启用，将在 {max(0, remaining)} 秒后启动", "info")
             else:
                 self.add_log("自动发帖已启用", "info")
-            # 如果机器人正在运行，启动发帖调度器
-            if self.discord_manager.is_running:
-                import asyncio
-                asyncio.create_task(self.discord_manager.start_posting_scheduler())
-                self.add_log("📝 发帖调度器已启动", "info")
         else:
             self.posting_toggle_button.setText("📄 自动发帖: 关闭")
             self.add_log("自动发帖已禁用", "info")
@@ -3423,32 +3792,30 @@ class MainWindow(QMainWindow):
     def toggle_auto_comment(self):
         """切换自动评论功能"""
         is_checked = self.comment_toggle_button.isChecked()
-        # 评论间隔始终可用，让用户可以预设参数
-        # self.comment_interval_spin.setEnabled(is_checked)
-        self.discord_manager.comment_enabled = is_checked
+        workspace = self.get_active_workspace()
+        if workspace is None:
+            return
+
+        features = self.get_active_workspace_features()
+        features["comment_enabled"] = is_checked
+
         if is_checked:
             delay = max(0, getattr(self.discord_manager, "comment_start_delay", 0))
-            self.discord_manager.comment_start_at = time.time() + delay if delay > 0 else None
+            features["comment_start_at"] = time.time() + delay if delay > 0 else None
         else:
-            self.discord_manager.comment_start_at = None
+            features["comment_start_at"] = None
+
+        workspace["features"] = features
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
         if is_checked:
-            for task in self.discord_manager.comment_tasks:
-                if task.is_active:
-                    task.next_run_at = None
-            self.discord_manager.comment_task_cursor = 0
             self.comment_toggle_button.setText("💬 自动评论: 开启")
-            if self.discord_manager.comment_start_at:
-                remaining = int(self.discord_manager.comment_start_at - time.time())
+            if features.get("comment_start_at"):
+                remaining = int(features["comment_start_at"] - time.time())
                 self.add_log(f"自动评论已启用，将在 {max(0, remaining)} 秒后启动", "info")
             else:
                 self.add_log("自动评论已启用", "info")
-            # 如果机器人正在运行，启动评论调度器
-            if self.discord_manager.is_running:
-                import asyncio
-                asyncio.create_task(self.discord_manager.start_comment_scheduler())
-                self.add_log("💬 评论调度器已启动", "info")
         else:
             self.comment_toggle_button.setText("💬 自动评论: 关闭")
             self.add_log("自动评论已禁用", "info")
@@ -3458,45 +3825,48 @@ class MainWindow(QMainWindow):
     def on_posting_enabled_changed(self, state):
         """发帖启用状态改变（向后兼容）"""
         enabled = state == Qt.CheckState.Checked
-        self.posting_interval_spin.setEnabled(enabled)
-        self.discord_manager.posting_enabled = enabled
-        if enabled:
-            delay = max(0, getattr(self.discord_manager, "posting_start_delay", 0))
-            self.discord_manager.posting_start_at = time.time() + delay if delay > 0 else None
-        else:
-            self.discord_manager.posting_start_at = None
-        # 同步更新按钮状态
         self.posting_toggle_button.setChecked(enabled)
-        if enabled:
-            self.posting_toggle_button.setText("📄 自动发帖: 开启")
-        else:
-            self.posting_toggle_button.setText("📄 自动发帖: 关闭")
-        self.save_config()
-
-        if enabled:
-            self.add_log("自动发帖已启用", "info")
-        else:
-            self.add_log("自动发帖已禁用", "info")
+        self.toggle_auto_posting()
 
     def on_posting_rotation_enabled_changed(self, state):
         """发帖轮换启用状态改变"""
         enabled = state == Qt.CheckState.Checked
         self.discord_manager.posting_rotation_enabled = enabled
         self.discord_manager.posting_rotation_count = self.posting_rotation_count_spin.value()
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
         if enabled:
             self.add_log(f"发帖账号轮换已启用 (每{self.posting_rotation_count_spin.value()}条轮换)", "info")
         else:
             self.add_log("发帖账号轮换已禁用", "info")
+
+    def on_posting_rotation_count_changed(self, value=None):
+        """发帖轮换条数改变"""
+        if value is None:
+            value = self.posting_rotation_count_spin.value()
+        self.discord_manager.posting_rotation_count = max(1, int(value))
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
 
     def on_comment_rotation_enabled_changed(self, state):
         """评论轮换启用状态改变"""
         enabled = state == Qt.CheckState.Checked
         self.discord_manager.comment_rotation_enabled = enabled
         self.discord_manager.comment_rotation_count = self.comment_rotation_count_spin.value()
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
         if enabled:
             self.add_log(f"评论账号轮换已启用 (每{self.comment_rotation_count_spin.value()}条轮换)", "info")
         else:
             self.add_log("评论账号轮换已禁用", "info")
+
+    def on_comment_rotation_count_changed(self, value=None):
+        """评论轮换条数改变"""
+        if value is None:
+            value = self.comment_rotation_count_spin.value()
+        self.discord_manager.comment_rotation_count = max(1, int(value))
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
 
     def add_posting_task(self):
         """添加发帖任务"""
@@ -3519,6 +3889,7 @@ class MainWindow(QMainWindow):
                 data.get('tags')
             )
             self.update_posting_tasks_list()
+            self.save_config()
             self.add_log(f"发帖任务已添加: {task_id}", "info")
 
     def import_posting_materials(self):
@@ -3553,10 +3924,15 @@ class MainWindow(QMainWindow):
             channel_value = data.get("channel_id") or data.get("channel")
             channel_id = None
             if channel_value:
+                channel_text = str(channel_value).strip().replace("<#", "").replace(">", "")
                 try:
-                    channel_id = int(str(channel_value).strip())
+                    channel_id = int(channel_text)
                 except ValueError:
-                    channel_id = None
+                    parts = [part for part in channel_text.split("/") if part]
+                    for part in reversed(parts):
+                        if part.isdigit():
+                            channel_id = int(part)
+                            break
             image_value = data.get("image_path") or data.get("images") or data.get("image")
             image_path = None
             if isinstance(image_value, list):
@@ -3588,10 +3964,15 @@ class MainWindow(QMainWindow):
                 with open(channel_path, "r", encoding="utf-8") as f:
                     channel_text = f.read().strip()
                 if channel_text:
+                    channel_text = channel_text.replace("<#", "").replace(">", "")
                     try:
                         channel_id = int(channel_text)
                     except ValueError:
-                        channel_id = None
+                        parts = [part for part in channel_text.split("/") if part]
+                        for part in reversed(parts):
+                            if part.isdigit():
+                                channel_id = int(part)
+                                break
 
             tags_path = os.path.join(path, "tags.txt")
             if os.path.exists(tags_path):
@@ -3722,6 +4103,540 @@ class MainWindow(QMainWindow):
         self.update_posting_tasks_list()
         self.save_config()
         QMessageBox.information(self, "完成", f"已读取 {added} 条素材，跳过 {skipped} 条")
+
+    def import_comment_materials(self):
+        """自动读取评论素材"""
+        folder = QFileDialog.getExistingDirectory(self, "选择评论素材文件夹")
+        if not folder:
+            return
+
+        import re
+
+        def split_simple_text(value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                items = []
+                for item in value:
+                    items.extend(split_simple_text(item))
+                return [v for v in items if v]
+            text = str(value).strip()
+            if not text:
+                return []
+            return [v.strip() for v in re.split(r"[\n,;，；]+", text) if v.strip()]
+
+        def parse_comment_blocks(value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                blocks = []
+                for item in value:
+                    text = str(item).strip()
+                    if text:
+                        blocks.append(text)
+                return blocks
+
+            text = str(value).strip()
+            if not text:
+                return []
+
+            sep_blocks = [b.strip() for b in re.split(r"\n(?:-{3,}|={3,})\n", text) if b.strip()]
+            if len(sep_blocks) > 1:
+                return sep_blocks
+
+            line_blocks = [line.strip() for line in text.splitlines() if line.strip()]
+            return line_blocks if len(line_blocks) > 1 else [text]
+
+        def normalize_image_path(value, base_dir):
+            if not value:
+                return None
+
+            raw_paths = []
+            if isinstance(value, list):
+                for item in value:
+                    if item:
+                        raw_paths.extend(split_simple_text(item))
+            else:
+                raw_paths.extend(split_simple_text(value))
+
+            if not raw_paths:
+                return None
+
+            resolved = []
+            for raw in raw_paths:
+                candidate = raw
+                if not os.path.isabs(candidate):
+                    joined = os.path.join(base_dir, candidate)
+                    if os.path.exists(joined):
+                        candidate = joined
+                resolved.append(candidate)
+
+            unique_paths = []
+            seen = set()
+            for path in resolved:
+                if path not in seen:
+                    seen.add(path)
+                    unique_paths.append(path)
+
+            return ";".join(unique_paths) if unique_paths else None
+
+        def build_comment_tasks(comments, links, image_path):
+            comments = [c.strip() for c in comments if c and str(c).strip()]
+            links = [l.strip() for l in links if l and str(l).strip()]
+            if not comments or not links:
+                return []
+
+            if len(comments) == 1:
+                return [{
+                    "content": comments[0],
+                    "links": links,
+                    "image_path": image_path
+                }]
+
+            buckets = [[] for _ in comments]
+            for idx, link in enumerate(links):
+                buckets[idx % len(comments)].append(link)
+
+            tasks = []
+            for comment, bucket in zip(comments, buckets):
+                if not bucket:
+                    continue
+                tasks.append({
+                    "content": comment,
+                    "links": bucket,
+                    "image_path": image_path
+                })
+            return tasks
+
+        def parse_comment_dict(data, base_dir):
+            if not isinstance(data, dict):
+                return []
+
+            comment_value = (
+                data.get("content")
+                or data.get("comment")
+                or data.get("comments")
+                or data.get("reply")
+                or data.get("text")
+                or data.get("body")
+            )
+            comments = parse_comment_blocks(comment_value)
+
+            links_value = (
+                data.get("message_link")
+                or data.get("message_links")
+                or data.get("links")
+                or data.get("link")
+                or data.get("url")
+                or data.get("target")
+                or data.get("channel_id")
+                or data.get("channel")
+            )
+            links = split_simple_text(links_value)
+
+            image_value = data.get("image_path") or data.get("images") or data.get("image")
+            image_path = normalize_image_path(image_value, base_dir)
+
+            return build_comment_tasks(comments, links, image_path)
+
+        def parse_task_folder(path):
+            comments = []
+            links = []
+
+            for name in ("content.txt", "comment.txt", "comments.txt", "reply.txt", "text.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        comments = parse_comment_blocks(f.read())
+                    if comments:
+                        break
+
+            for name in ("links.txt", "link.txt", "url.txt", "urls.txt", "message_link.txt"):
+                candidate = os.path.join(path, name)
+                if os.path.exists(candidate):
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        links = split_simple_text(f.read())
+                    if links:
+                        break
+
+            image_files = []
+            for file_name in os.listdir(path):
+                if file_name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
+                    image_files.append(os.path.join(path, file_name))
+            image_path = ";".join(sorted(image_files)) if image_files else None
+
+            return build_comment_tasks(comments, links, image_path)
+
+        tasks = []
+        json_files = [f for f in os.listdir(folder) if f.lower().endswith(".json")]
+        csv_files = [f for f in os.listdir(folder) if f.lower().endswith(".csv")]
+
+        for filename in json_files:
+            file_path = os.path.join(folder, filename)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                if isinstance(data, list):
+                    for item in data:
+                        tasks.extend(parse_comment_dict(item, folder))
+                elif isinstance(data, dict):
+                    payload = data.get("tasks") or data.get("data")
+                    if isinstance(payload, list):
+                        for item in payload:
+                            tasks.extend(parse_comment_dict(item, folder))
+                    else:
+                        tasks.extend(parse_comment_dict(data, folder))
+            except Exception as e:
+                self.add_log(f"读取评论JSON失败: {filename} - {e}", "warning")
+
+        for filename in csv_files:
+            file_path = os.path.join(folder, filename)
+            try:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        tasks.extend(parse_comment_dict(row, folder))
+            except Exception as e:
+                self.add_log(f"读取评论CSV失败: {filename} - {e}", "warning")
+
+        if not tasks:
+            links_file = None
+            for name in ("links.txt", "link.txt", "url.txt", "urls.txt"):
+                candidate = os.path.join(folder, name)
+                if os.path.exists(candidate):
+                    links_file = candidate
+                    break
+
+            comments_file = None
+            for name in ("comments.txt", "content.txt", "reply.txt", "text.txt"):
+                candidate = os.path.join(folder, name)
+                if os.path.exists(candidate):
+                    comments_file = candidate
+                    break
+
+            if links_file and comments_file:
+                with open(links_file, "r", encoding="utf-8") as f:
+                    links = split_simple_text(f.read())
+                with open(comments_file, "r", encoding="utf-8") as f:
+                    comments = parse_comment_blocks(f.read())
+                tasks.extend(build_comment_tasks(comments, links, None))
+
+        if not tasks:
+            subdirs = [os.path.join(folder, d) for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))]
+            for subdir in sorted(subdirs):
+                tasks.extend(parse_task_folder(subdir))
+
+        if not tasks:
+            QMessageBox.information(self, "提示", "未发现可读取的评论素材")
+            return
+
+        added = 0
+        skipped = 0
+        for task in tasks:
+            content = task.get("content", "").strip()
+            links = [link.strip() for link in task.get("links", []) if link and str(link).strip()]
+            if not content or not links:
+                skipped += 1
+                continue
+
+            self.discord_manager.add_comment_task(
+                content,
+                "\n".join(links),
+                task.get("image_path"),
+                0
+            )
+            added += 1
+
+        self.update_comment_tasks_list()
+        self.save_config()
+        QMessageBox.information(self, "完成", f"已读取 {added} 条评论任务，跳过 {skipped} 条")
+
+    def import_reply_materials(self):
+        """自动读取自动回复素材"""
+        folder = QFileDialog.getExistingDirectory(self, "选择自动回复素材文件夹")
+        if not folder:
+            return
+
+        import re
+
+        def split_text(value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                items = []
+                for item in value:
+                    items.extend(split_text(item))
+                return [v for v in items if v]
+            text = str(value).strip()
+            if not text:
+                return []
+            return [v.strip() for v in re.split(r"[\n,;，；]+", text) if v.strip()]
+
+        def parse_bool(value, default=True):
+            if value is None:
+                return default
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if text in ("1", "true", "yes", "y", "on", "是"):
+                return True
+            if text in ("0", "false", "no", "n", "off", "否"):
+                return False
+            return default
+
+        def safe_float(value, default):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        def extract_channel_id(raw):
+            if raw is None:
+                return None
+            text = str(raw).strip().replace("<#", "").replace(">", "")
+            if not text:
+                return None
+            if text.isdigit():
+                try:
+                    return int(text)
+                except ValueError:
+                    return None
+
+            parts = [part for part in text.split("/") if part]
+            for part in reversed(parts):
+                if part.isdigit():
+                    try:
+                        return int(part)
+                    except ValueError:
+                        return None
+            return None
+
+        def normalize_image_path(value, base_dir):
+            paths = []
+            if isinstance(value, list):
+                for item in value:
+                    paths.extend(split_text(item))
+            else:
+                paths.extend(split_text(value))
+
+            if not paths:
+                return None
+
+            resolved = []
+            seen = set()
+            for raw in paths:
+                candidate = raw
+                if not os.path.isabs(candidate):
+                    joined = os.path.join(base_dir, candidate)
+                    if os.path.exists(joined):
+                        candidate = joined
+                if candidate not in seen:
+                    seen.add(candidate)
+                    resolved.append(candidate)
+
+            return ";".join(resolved) if resolved else None
+
+        def parse_rule_dict(data, base_dir):
+            if not isinstance(data, dict):
+                return None
+
+            keywords = (
+                data.get("keywords")
+                or data.get("keyword")
+                or data.get("title")
+                or data.get("titles")
+                or data.get("name")
+            )
+            keywords = split_text(keywords)
+
+            reply_text = (
+                data.get("reply")
+                or data.get("content")
+                or data.get("text")
+                or data.get("body")
+                or data.get("message")
+            )
+            if isinstance(reply_text, list):
+                reply_text = "\n".join(str(v) for v in reply_text if v is not None)
+            reply_text = str(reply_text).strip() if reply_text is not None else ""
+
+            channels_raw = (
+                data.get("channel_id")
+                or data.get("channels")
+                or data.get("channel")
+                or data.get("link")
+                or data.get("url")
+            )
+            target_channels = []
+            for token in split_text(channels_raw):
+                channel_id = extract_channel_id(token)
+                if channel_id is not None and channel_id not in target_channels:
+                    target_channels.append(channel_id)
+
+            match_type = str(data.get("match_type", "partial") or "partial").lower()
+            if match_type not in ("partial", "exact", "regex"):
+                match_type = "partial"
+
+            rule_data = {
+                "keywords": keywords,
+                "reply": reply_text,
+                "match_type": match_type,
+                "target_channels": target_channels,
+                "delay_min": safe_float(data.get("delay_min", 0.1), 0.1),
+                "delay_max": safe_float(data.get("delay_max", 1.0), 1.0),
+                "is_active": parse_bool(data.get("is_active"), True),
+                "ignore_replies": parse_bool(data.get("ignore_replies"), True),
+                "ignore_mentions": parse_bool(data.get("ignore_mentions"), True),
+                "case_sensitive": parse_bool(data.get("case_sensitive"), False),
+                "image_path": normalize_image_path(data.get("image") or data.get("images") or data.get("image_path"), base_dir),
+                "account_ids": split_text(data.get("account_ids") or data.get("accounts"))
+            }
+
+            if not rule_data["keywords"] or not rule_data["reply"]:
+                return None
+            if rule_data["delay_max"] < rule_data["delay_min"]:
+                rule_data["delay_max"] = rule_data["delay_min"]
+            return rule_data
+
+        def parse_rule_folder(path):
+            data = {}
+
+            for file_name, key in (
+                ("keywords.txt", "keywords"),
+                ("keyword.txt", "keywords"),
+                ("title.txt", "keywords"),
+                ("reply.txt", "reply"),
+                ("content.txt", "reply"),
+                ("text.txt", "reply"),
+                ("channel.txt", "channel"),
+                ("channels.txt", "channels"),
+                ("link.txt", "link"),
+                ("match_type.txt", "match_type"),
+            ):
+                candidate = os.path.join(path, file_name)
+                if os.path.exists(candidate):
+                    with open(candidate, "r", encoding="utf-8") as f:
+                        data[key] = f.read().strip()
+
+            if "keywords" not in data:
+                data["keywords"] = os.path.basename(path)
+
+            image_files = []
+            for file_name in os.listdir(path):
+                if file_name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
+                    image_files.append(os.path.join(path, file_name))
+            if image_files:
+                data["image_path"] = ";".join(sorted(image_files))
+
+            return parse_rule_dict(data, path)
+
+        rules_to_add = []
+        json_files = [f for f in os.listdir(folder) if f.lower().endswith(".json")]
+        csv_files = [f for f in os.listdir(folder) if f.lower().endswith(".csv")]
+
+        for filename in json_files:
+            file_path = os.path.join(folder, filename)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                if isinstance(data, list):
+                    for item in data:
+                        rule_data = parse_rule_dict(item, folder)
+                        if rule_data:
+                            rules_to_add.append(rule_data)
+                elif isinstance(data, dict):
+                    payload = data.get("rules") or data.get("data") or data.get("tasks")
+                    if isinstance(payload, list):
+                        for item in payload:
+                            rule_data = parse_rule_dict(item, folder)
+                            if rule_data:
+                                rules_to_add.append(rule_data)
+                    else:
+                        rule_data = parse_rule_dict(data, folder)
+                        if rule_data:
+                            rules_to_add.append(rule_data)
+            except Exception as e:
+                self.add_log(f"读取自动回复JSON失败: {filename} - {e}", "warning")
+
+        for filename in csv_files:
+            file_path = os.path.join(folder, filename)
+            try:
+                with open(file_path, "r", encoding="utf-8-sig") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        rule_data = parse_rule_dict(row, folder)
+                        if rule_data:
+                            rules_to_add.append(rule_data)
+            except Exception as e:
+                self.add_log(f"读取自动回复CSV失败: {filename} - {e}", "warning")
+
+        if not rules_to_add:
+            subdirs = [os.path.join(folder, d) for d in os.listdir(folder) if os.path.isdir(os.path.join(folder, d))]
+            for subdir in sorted(subdirs):
+                rule_data = parse_rule_folder(subdir)
+                if rule_data:
+                    rules_to_add.append(rule_data)
+
+        if not rules_to_add:
+            text_files = [f for f in os.listdir(folder) if f.lower().endswith((".txt", ".md"))]
+            for filename in sorted(text_files):
+                if filename.lower() in ("keywords.txt", "keyword.txt", "reply.txt", "content.txt", "channel.txt", "channels.txt"):
+                    continue
+                file_path = os.path.join(folder, filename)
+                with open(file_path, "r", encoding="utf-8") as f:
+                    reply_text = f.read().strip()
+                if not reply_text:
+                    continue
+                rules_to_add.append({
+                    "keywords": [os.path.splitext(filename)[0]],
+                    "reply": reply_text,
+                    "match_type": "partial",
+                    "target_channels": [],
+                    "delay_min": 0.1,
+                    "delay_max": 1.0,
+                    "is_active": True,
+                    "ignore_replies": True,
+                    "ignore_mentions": True,
+                    "case_sensitive": False,
+                    "image_path": None,
+                    "account_ids": []
+                })
+
+        if not rules_to_add:
+            QMessageBox.information(self, "提示", "未发现可读取的自动回复素材")
+            return
+
+        added = 0
+        skipped = 0
+        for rule_data in rules_to_add:
+            keywords = rule_data.get("keywords") or []
+            reply_text = rule_data.get("reply", "").strip()
+            if not keywords or not reply_text:
+                skipped += 1
+                continue
+
+            self.discord_manager.add_rule(
+                keywords,
+                reply_text,
+                MatchType(rule_data.get("match_type", "partial")),
+                rule_data.get("target_channels", []),
+                rule_data.get("delay_min", 0.1),
+                rule_data.get("delay_max", 1.0),
+                rule_data.get("ignore_replies", True),
+                rule_data.get("ignore_mentions", True),
+                rule_data.get("case_sensitive", False),
+                rule_data.get("image_path"),
+                rule_data.get("account_ids", [])
+            )
+            if self.discord_manager.rules:
+                self.discord_manager.rules[-1].is_active = rule_data.get("is_active", True)
+            added += 1
+
+        self.update_rules_list()
+        self.save_config()
+        QMessageBox.information(self, "完成", f"已读取 {added} 条自动回复规则，跳过 {skipped} 条")
 
     def remove_posting_task_by_id(self, row):
         """根据表格行号删除发帖任务（通过任务ID）"""
@@ -3971,25 +4886,8 @@ class MainWindow(QMainWindow):
     def on_comment_enabled_changed(self, state):
         """评论启用状态改变（向后兼容）"""
         enabled = state == Qt.CheckState.Checked
-        self.comment_interval_spin.setEnabled(enabled)
-        self.discord_manager.comment_enabled = enabled
-        if enabled:
-            delay = max(0, getattr(self.discord_manager, "comment_start_delay", 0))
-            self.discord_manager.comment_start_at = time.time() + delay if delay > 0 else None
-        else:
-            self.discord_manager.comment_start_at = None
-        # 同步更新按钮状态
         self.comment_toggle_button.setChecked(enabled)
-        if enabled:
-            self.comment_toggle_button.setText("💬 自动评论: 开启")
-        else:
-            self.comment_toggle_button.setText("💬 自动评论: 关闭")
-        self.save_config()
-
-        if enabled:
-            self.add_log("自动评论已启用", "info")
-        else:
-            self.add_log("自动评论已禁用", "info")
+        self.toggle_auto_comment()
 
     def add_comment_task(self):
         """添加评论任务"""
@@ -4003,6 +4901,7 @@ class MainWindow(QMainWindow):
                 0  # 使用全局评论间隔，不再有单独延时
             )
             self.update_comment_tasks_list()
+            self.save_config()
             self.add_log(f"评论任务已添加: {task_id}", "info")
 
     def remove_comment_task(self):
@@ -4053,6 +4952,15 @@ class MainWindow(QMainWindow):
         if value is None:
             value = self.posting_interval_spin.value()
         self.discord_manager.posting_interval = value
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
+
+    def on_posting_cycle_interval_changed(self, value=None):
+        """发帖循环轮次间隔改变"""
+        if value is None:
+            value = self.posting_cycle_interval_spin.value()
+        self.discord_manager.posting_cycle_interval = value
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
     def on_posting_start_delay_changed(self, value=None):
@@ -4066,6 +4974,7 @@ class MainWindow(QMainWindow):
         """发帖循环发送开关"""
         enabled = state == Qt.CheckState.Checked
         self.discord_manager.posting_repeat_enabled = enabled
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
         if enabled:
             self.add_log("发帖任务将循环发送", "info")
@@ -4118,6 +5027,15 @@ class MainWindow(QMainWindow):
         if value is None:
             value = self.comment_interval_spin.value()
         self.discord_manager.comment_interval = value
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
+
+    def on_comment_cycle_interval_changed(self, value=None):
+        """评论循环轮次间隔改变"""
+        if value is None:
+            value = self.comment_cycle_interval_spin.value()
+        self.discord_manager.comment_cycle_interval = value
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
     def on_comment_start_delay_changed(self, value=None):
@@ -4138,6 +5056,7 @@ class MainWindow(QMainWindow):
         """循环评论任务开关"""
         enabled = state == Qt.CheckState.Checked
         self.discord_manager.comment_repeat_enabled = enabled
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
         if enabled:
             self.add_log("评论任务将循环发送", "info")
@@ -4149,6 +5068,7 @@ class MainWindow(QMainWindow):
         if value is None:
             value = self.comment_link_interval_spin.value()
         self.discord_manager.comment_link_interval = value
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
     def update_comment_tasks_list(self):
@@ -4456,6 +5376,10 @@ def main():
     """主函数"""
     app = QApplication(sys.argv)
     app.setStyle('Fusion')  # 使用更现代的样式
+
+    red_pixmap = QPixmap(256, 256)
+    red_pixmap.fill(QColor(255, 0, 0))
+    app.setWindowIcon(QIcon(red_pixmap))
 
     # 设置应用程序属性，确保在macOS上正确显示
     app.setApplicationName("Discord Auto Reply")
