@@ -1359,47 +1359,74 @@ class DiscordManager:
             if runtime is not None:
                 link_interval = max(0, int(runtime.get("comment_link_interval", link_interval)))
 
+            def parse_comment_target(raw_link: str) -> Tuple[Optional[int], Optional[int]]:
+                """解析评论目标，支持频道ID、频道链接、消息链接和带参数URL。"""
+                text = raw_link.strip()
+                if not text:
+                    return None, None
+
+                if text.startswith("<#") and text.endswith(">"):
+                    text = text[2:-1].strip()
+                else:
+                    text = text.strip("<>").strip()
+
+                text = text.rstrip("/")
+                clean_text = text.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+                if clean_text.isdigit():
+                    try:
+                        return int(clean_text), None
+                    except ValueError:
+                        return None, None
+
+                # https://discord.com/channels/{guild_id}/{channel_id}/{message_id?}
+                match = re.search(r"/channels/\d+/(\d+)(?:/(\d+))?$", clean_text)
+                if match:
+                    try:
+                        channel_id = int(match.group(1))
+                        message_id = int(match.group(2)) if match.group(2) else None
+                        return channel_id, message_id
+                    except ValueError:
+                        return None, None
+
+                parts = [part for part in re.split(r"[\\/]", clean_text) if part]
+                if "channels" in parts:
+                    idx = parts.index("channels")
+                    numeric_parts = [part for part in parts[idx + 1:] if part.isdigit()]
+                    if len(numeric_parts) >= 2:
+                        try:
+                            channel_id = int(numeric_parts[1])
+                            message_id = int(numeric_parts[2]) if len(numeric_parts) >= 3 else None
+                            return channel_id, message_id
+                        except ValueError:
+                            return None, None
+                    if len(numeric_parts) == 1:
+                        try:
+                            return int(numeric_parts[0]), None
+                        except ValueError:
+                            return None, None
+
+                # 兼容 "channel_id/message_id"
+                if len(parts) >= 2 and parts[-1].isdigit() and parts[-2].isdigit():
+                    try:
+                        return int(parts[-2]), int(parts[-1])
+                    except ValueError:
+                        return None, None
+
+                return None, None
+
             for index, link in enumerate(links):
                 if not runtime_enabled:
                     if self.log_callback:
                         self.log_callback("⏹️ 自动评论已关闭，停止当前评论任务")
                     break
 
-                # 兼容 <https://...>、末尾斜杠、<#频道ID> 等复制格式
-                link = link.strip().strip('<>').rstrip('/')
-                if link.startswith("<#") and link.endswith(">"):
-                    link = link[2:-1]
-
-                if link.isdigit():
-                    try:
-                        channel_id = int(link)
-                        target_id = None
-                    except ValueError:
-                        if self.log_callback:
-                            self.log_callback(f"❌ 无效的频道ID: {link}")
-                        continue
-                else:
-                    parts = link.split('/')
-                    if len(parts) >= 7:
-                        try:
-                            channel_id = int(parts[-2])
-                            target_id = int(parts[-1])
-                        except (ValueError, IndexError) as e:
-                            if self.log_callback:
-                                self.log_callback(f"❌ 无法解析链接: {link} - {str(e)}")
-                            continue
-                    elif len(parts) >= 6:
-                        try:
-                            channel_id = int(parts[-1])
-                            target_id = None
-                        except (ValueError, IndexError) as e:
-                            if self.log_callback:
-                                self.log_callback(f"❌ 无法解析链接: {link} - {str(e)}")
-                            continue
-                    else:
-                        if self.log_callback:
-                            self.log_callback(f"❌ 无效的链接格式: {link}")
-                        continue
+                link = link.strip()
+                channel_id, target_id = parse_comment_target(link)
+                if channel_id is None:
+                    if self.log_callback:
+                        self.log_callback(f"❌ 无法解析评论目标: {link}")
+                    continue
 
                 channel = client.get_channel(channel_id)
                 if not channel:
@@ -1491,13 +1518,17 @@ class DiscordManager:
                         self.log_callback(f"⏳ 等待 {link_interval} 秒后继续下一条评论")
                     await asyncio.sleep(link_interval)
 
+            if success_count <= 0:
+                if self.log_callback:
+                    self.log_callback(f"❌ [{account.alias}] 评论任务未发送成功，等待下一轮重试")
+                return False
+
             if self.log_callback:
                 self.log_callback(f"✅ [{account.alias}] 成功发送 {success_count}/{len(links)} 条评论")
 
-            if success_count > 0:
-                task.sent_count += 1
-                task.last_sent_at = time.time()
-                self.comment_sent_total += success_count
+            task.sent_count += 1
+            task.last_sent_at = time.time()
+            self.comment_sent_total += success_count
 
             if runtime is not None:
                 runtime["count_since_rotation"] = int(runtime.get("count_since_rotation", 0)) + 1

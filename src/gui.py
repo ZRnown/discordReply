@@ -1353,11 +1353,11 @@ class MainWindow(QMainWindow):
 
         # 账号选择
         self.comment_accounts_combo = QComboBox()
-        self.comment_accounts_combo.addItem("随机使用所有账号")
+        self.comment_accounts_combo.addItem("随机使用所有账号", None)
         # 添加具体账号选项
         for account in self.discord_manager.accounts:
             if account.is_active and account.is_valid:
-                self.comment_accounts_combo.addItem(f"仅使用 {account.alias}")
+                self.comment_accounts_combo.addItem(f"仅使用 {account.alias}", account.token)
         self.comment_accounts_combo.setCurrentIndex(0)  # 默认随机使用所有账号
 
         rotation_accounts_layout.addWidget(QLabel("评论账号:"))
@@ -1836,6 +1836,29 @@ class MainWindow(QMainWindow):
                     context["account_tokens"] = list(rotation.get("comment_account_tokens", []) or [])
                     context["rotation_enabled"] = bool(rotation.get("comment_rotation_enabled", False))
                     context["rotation_count"] = max(1, int(rotation.get("comment_rotation_count", 10)))
+
+                    # 同步页面评论任务到运行上下文（支持运行中新增/读取素材）
+                    previous_task_map = {task.id: task for task in context.get("tasks", [])}
+                    runtime_tasks = []
+                    for task in workspace.get("comment_tasks", []):
+                        runtime_task = copy.deepcopy(task)
+                        previous_task = previous_task_map.get(task.id)
+                        if (
+                            previous_task
+                            and runtime_task.content == previous_task.content
+                            and runtime_task.message_link == previous_task.message_link
+                            and runtime_task.image_path == previous_task.image_path
+                            and runtime_task.is_active == previous_task.is_active
+                        ):
+                            runtime_task.next_run_at = previous_task.next_run_at
+                            runtime_task.sent_count = getattr(previous_task, "sent_count", runtime_task.sent_count)
+                            runtime_task.last_sent_at = getattr(previous_task, "last_sent_at", runtime_task.last_sent_at)
+                        runtime_tasks.append(runtime_task)
+                    context["tasks"] = runtime_tasks
+                    if int(context.get("cursor", 0)) >= len(runtime_tasks):
+                        context["cursor"] = 0
+                    if not runtime_tasks:
+                        context["_initialized"] = False
                 else:
                     runtime_tasks = [copy.deepcopy(task) for task in workspace.get("comment_tasks", [])]
                     for task in runtime_tasks:
@@ -2330,21 +2353,28 @@ class MainWindow(QMainWindow):
 
         # 更新自动评论组合框
         if hasattr(self, 'comment_accounts_combo'):
+            current_token = self.comment_accounts_combo.currentData()
             current_index = self.comment_accounts_combo.currentIndex()
             self.comment_accounts_combo.clear()
-            self.comment_accounts_combo.addItem("随机使用所有账号")
+            self.comment_accounts_combo.addItem("随机使用所有账号", None)
 
             valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
             for account in valid_accounts:
-                self.comment_accounts_combo.addItem(f"仅使用 {account.alias}")
+                self.comment_accounts_combo.addItem(f"仅使用 {account.alias}", account.token)
 
             selected_token = self.discord_manager.comment_account_tokens[0] if self.discord_manager.comment_account_tokens else None
             if selected_token:
-                selected_index = next((i for i, acc in enumerate(valid_accounts) if acc.token == selected_token), None)
-                if selected_index is not None:
-                    self.comment_accounts_combo.setCurrentIndex(selected_index + 1)
+                selected_index = self.comment_accounts_combo.findData(selected_token)
+                if selected_index >= 0:
+                    self.comment_accounts_combo.setCurrentIndex(selected_index)
                 else:
                     self.comment_accounts_combo.setCurrentIndex(0)
+            elif current_token is not None:
+                selected_index = self.comment_accounts_combo.findData(current_token)
+                if selected_index >= 0:
+                    self.comment_accounts_combo.setCurrentIndex(selected_index)
+                elif current_index < self.comment_accounts_combo.count():
+                    self.comment_accounts_combo.setCurrentIndex(current_index)
             elif current_index < self.comment_accounts_combo.count():
                 self.comment_accounts_combo.setCurrentIndex(current_index)
 
@@ -3049,26 +3079,32 @@ class MainWindow(QMainWindow):
 
     def apply_global_comment_accounts(self):
         """应用全局账号设置到所有评论任务"""
-        current_index = self.comment_accounts_combo.currentIndex()
+        selected_token = self.comment_accounts_combo.currentData()
+        valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+        valid_tokens = {acc.token for acc in valid_accounts}
 
-        if current_index == 0:
-            # 随机使用所有账号
-            self.discord_manager.comment_account_tokens = []
-            self.refresh_runtime_contexts_from_workspaces()
-            self.save_config()
-            QMessageBox.information(self, "提示", "评论任务将随机使用所有可用账号")
+        if selected_token is not None and selected_token not in valid_tokens:
+            QMessageBox.information(self, "提示", "未找到可用账号，请先验证账号")
+            return
+
+        target_tokens = [selected_token] if selected_token else []
+        self.discord_manager.comment_account_tokens = target_tokens
+
+        # 全局应用到所有页面，避免切页后账号选择失效
+        for workspace in self.workspaces:
+            rotation = workspace.get("rotation", {}) or {}
+            rotation["comment_account_tokens"] = list(target_tokens)
+            workspace["rotation"] = rotation
+
+        self.refresh_runtime_contexts_from_workspaces()
+        self.save_config()
+
+        if selected_token:
+            selected_account = next((acc for acc in valid_accounts if acc.token == selected_token), None)
+            alias = selected_account.alias if selected_account else "所选账号"
+            QMessageBox.information(self, "提示", f"评论任务仅使用账号：{alias}")
         else:
-            # 仅使用指定账号
-            selected_account_index = current_index - 1
-            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
-            if selected_account_index < len(valid_accounts):
-                selected_account = valid_accounts[selected_account_index]
-                self.discord_manager.comment_account_tokens = [selected_account.token]
-                self.refresh_runtime_contexts_from_workspaces()
-                self.save_config()
-                QMessageBox.information(self, "提示", f"评论任务仅使用账号：{selected_account.alias}")
-            else:
-                QMessageBox.information(self, "提示", "未找到可用账号，请先验证账号")
+            QMessageBox.information(self, "提示", "评论任务将随机使用所有可用账号")
 
     def revalidate_all_accounts(self):
         """重新验证所有账号"""
@@ -3874,8 +3910,8 @@ class MainWindow(QMainWindow):
         enabled = state == Qt.CheckState.Checked
         self.discord_manager.comment_rotation_enabled = enabled
         self.discord_manager.comment_rotation_count = self.comment_rotation_count_spin.value()
-        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
         if enabled:
             self.add_log(f"评论账号轮换已启用 (每{self.comment_rotation_count_spin.value()}条轮换)", "info")
         else:
@@ -3886,8 +3922,8 @@ class MainWindow(QMainWindow):
         if value is None:
             value = self.comment_rotation_count_spin.value()
         self.discord_manager.comment_rotation_count = max(1, int(value))
-        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
 
     def add_posting_task(self):
         """添加发帖任务"""
@@ -4319,6 +4355,8 @@ class MainWindow(QMainWindow):
                 or data.get("地址")
                 or data.get("帖子链接")
                 or data.get("消息链接")
+                or data.get("内容链接")
+                or data.get("频道链接")
                 or data.get("频道")
                 or data.get("频道ID")
             )
@@ -4361,7 +4399,7 @@ class MainWindow(QMainWindow):
 
             for name in (
                 "links.txt", "link.txt", "url.txt", "urls.txt", "message_link.txt",
-                "链接.txt", "地址.txt", "帖子链接.txt", "消息链接.txt"
+                "链接.txt", "地址.txt", "帖子链接.txt", "消息链接.txt", "内容链接.txt", "频道链接.txt"
             ):
                 candidate = os.path.join(path, name)
                 if os.path.exists(candidate):
@@ -4422,7 +4460,10 @@ class MainWindow(QMainWindow):
 
         if not tasks:
             links_file = None
-            for name in ("links.txt", "link.txt", "url.txt", "urls.txt", "链接.txt", "地址.txt", "帖子链接.txt", "消息链接.txt"):
+            for name in (
+                "links.txt", "link.txt", "url.txt", "urls.txt",
+                "链接.txt", "地址.txt", "帖子链接.txt", "消息链接.txt", "内容链接.txt", "频道链接.txt"
+            ):
                 candidate = os.path.join(folder, name)
                 if os.path.exists(candidate):
                     links_file = candidate
@@ -4484,6 +4525,7 @@ class MainWindow(QMainWindow):
 
         self.update_comment_tasks_list()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
         QMessageBox.information(self, "完成", f"已读取 {added} 条评论任务，跳过 {skipped} 条")
 
     def import_reply_materials(self):
@@ -4905,6 +4947,7 @@ class MainWindow(QMainWindow):
             self.discord_manager.comment_tasks.remove(task)
             self.update_comment_tasks_list()
             self.save_config()
+            self.refresh_runtime_contexts_from_workspaces()
             self.add_log(f"评论任务已删除: {task_id}", "info")
 
     def clear_comment_tasks(self):
@@ -4924,6 +4967,7 @@ class MainWindow(QMainWindow):
             self.discord_manager.comment_tasks.clear()
             self.update_comment_tasks_list()
             self.save_config()
+            self.refresh_runtime_contexts_from_workspaces()
             self.add_log("所有评论任务已删除", "info")
 
     def edit_posting_task_by_id(self, row):
@@ -5017,6 +5061,7 @@ class MainWindow(QMainWindow):
                 # 更新UI
                 self.update_comment_tasks_list()
                 self.save_config()
+                self.refresh_runtime_contexts_from_workspaces()
                 self.add_log(f"评论任务已更新: {task.id}", "info")
                 QMessageBox.information(self, "成功", "评论任务已更新")
             except Exception as e:
@@ -5090,6 +5135,7 @@ class MainWindow(QMainWindow):
             )
             self.update_comment_tasks_list()
             self.save_config()
+            self.refresh_runtime_contexts_from_workspaces()
             self.add_log(f"评论任务已添加: {task_id}", "info")
 
     def remove_comment_task(self):
@@ -5130,6 +5176,7 @@ class MainWindow(QMainWindow):
                 self.discord_manager.comment_tasks.remove(task_to_remove)
                 self.update_comment_tasks_list()
                 self.save_config()
+                self.refresh_runtime_contexts_from_workspaces()
                 self.add_log(f"评论任务已删除: {task_id}", "info")
                 QMessageBox.information(self, "成功", "评论任务已删除")
             else:
@@ -5215,16 +5262,16 @@ class MainWindow(QMainWindow):
         if value is None:
             value = self.comment_interval_spin.value()
         self.discord_manager.comment_interval = value
-        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
 
     def on_comment_cycle_interval_changed(self, value=None):
         """评论循环轮次间隔改变"""
         if value is None:
             value = self.comment_cycle_interval_spin.value()
         self.discord_manager.comment_cycle_interval = value
-        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
 
     def on_comment_start_delay_changed(self, value=None):
         """评论启动倒计时改变"""
@@ -5244,8 +5291,8 @@ class MainWindow(QMainWindow):
         """循环评论任务开关"""
         enabled = state == Qt.CheckState.Checked
         self.discord_manager.comment_repeat_enabled = enabled
-        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
         if enabled:
             self.add_log("评论任务将循环发送", "info")
         else:
@@ -5256,8 +5303,8 @@ class MainWindow(QMainWindow):
         if value is None:
             value = self.comment_link_interval_spin.value()
         self.discord_manager.comment_link_interval = value
-        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
+        self.refresh_runtime_contexts_from_workspaces()
 
     def update_comment_tasks_list(self):
         """更新评论任务列表"""
