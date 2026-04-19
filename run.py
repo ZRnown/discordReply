@@ -25,11 +25,12 @@ def main():
 
     # 2. 依赖检查
     try:
-        import discord
+        # 跳过discord的导入检查，因为discord.py-self可能会有版本兼容性问题
+        # 改为直接尝试导入我们需要的模块
+        from src.discord_client import DiscordManager
         import PySide6
 
-        # 移除了对 Intents 的检查，因为 discord.py-self 2.0+ 已经废弃了它
-        print(f"Discord 库版本: {getattr(discord, '__version__', '未知')}")
+        print("PySide6 版本:", getattr(PySide6, '__version__', '未知'))
         print("环境依赖检查通过。")
 
     except ImportError as e:

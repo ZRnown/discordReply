@@ -20,6 +20,7 @@ from PySide6.QtGui import QFont, QIcon, QColor, QPixmap
 
 from .discord_client import DiscordManager, Account, Rule, MatchType
 from .config_manager import ConfigManager
+from .ad_scraper import DiscordAdCrawler, parse_discord_channel_url
 
 
 class LicenseVerifyThread(QThread):
@@ -688,6 +689,51 @@ class WorkerThread(QThread):
         pass
 
 
+class AdScraperThread(QThread):
+    """广告抓取线程"""
+    log_message = Signal(str)
+    crawl_finished = Signal(dict)
+    error_occurred = Signal(str)
+
+    def __init__(self, token: str, channel_url: str, output_root: str, include_archived: bool = True):
+        super().__init__()
+        self.token = token
+        self.channel_url = channel_url
+        self.output_root = output_root
+        self.include_archived = include_archived
+
+    def run(self):
+        try:
+            asyncio.run(self._run_crawler())
+        except Exception as e:
+            self.error_occurred.emit(str(e))
+
+    async def _run_crawler(self):
+        crawler = DiscordAdCrawler(log_callback=self.log_message.emit)
+        summary = await crawler.crawl_channel(
+            token=self.token,
+            channel_url=self.channel_url,
+            output_root=self.output_root,
+            include_archived=self.include_archived,
+        )
+
+        self.crawl_finished.emit({
+            "channel_name": summary.channel_name,
+            "output_root": summary.output_root,
+            "ads": [
+                {
+                    "title": ad.title,
+                    "link": ad.link,
+                    "image_count": len(ad.image_paths) if ad.image_paths else len(ad.image_urls),
+                    "output_dir": ad.output_dir,
+                    "source_message_url": ad.source_message_url,
+                }
+                for ad in summary.ads
+            ],
+            "skipped_count": summary.skipped_count,
+        })
+
+
 
 class MainWindow(QMainWindow):
     # 定义信号
@@ -698,6 +744,7 @@ class MainWindow(QMainWindow):
         self.discord_manager = DiscordManager(log_callback=self.add_log_thread_safe)
         self.config_manager = ConfigManager()
         self.worker_thread = None
+        self.ad_scraper_thread = None
         self.workspaces = []
         self.active_workspace_index = 0
 
@@ -770,6 +817,9 @@ class MainWindow(QMainWindow):
 
         # 自动评论标签页
         self.create_comment_tab()
+
+        # 广告抓取标签页
+        self.create_scraper_tab()
 
         # 状态监控标签页
         self.create_status_tab()
@@ -1473,6 +1523,81 @@ class MainWindow(QMainWindow):
         layout.addWidget(tasks_group)
 
         self.tab_widget.addTab(comment_widget, "自动评论")
+
+    def create_scraper_tab(self):
+        """创建广告抓取标签页"""
+        scraper_widget = QWidget()
+        layout = QVBoxLayout(scraper_widget)
+
+        help_label = QLabel("输入 Discord 论坛频道链接或单个帖子链接，抓取标题、商品链接和图片，并按标题创建文件夹导出。")
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+
+        form_group = QGroupBox("抓取设置")
+        form_layout = QVBoxLayout(form_group)
+
+        account_layout = QHBoxLayout()
+        account_layout.addWidget(QLabel("抓取账号:"))
+        self.scrape_account_combo = QComboBox()
+        self.scrape_account_combo.setMinimumWidth(260)
+        account_layout.addWidget(self.scrape_account_combo)
+        account_layout.addStretch()
+        form_layout.addLayout(account_layout)
+
+        channel_layout = QHBoxLayout()
+        channel_layout.addWidget(QLabel("频道链接:"))
+        self.scrape_channel_input = QLineEdit()
+        self.scrape_channel_input.setPlaceholderText("https://discord.com/channels/<guild>/<channel>")
+        channel_layout.addWidget(self.scrape_channel_input)
+        form_layout.addLayout(channel_layout)
+
+        output_layout = QHBoxLayout()
+        output_layout.addWidget(QLabel("输出目录:"))
+        self.scrape_output_input = QLineEdit()
+        self.scrape_output_input.setText(os.path.join(os.getcwd(), "downloads", "discord_ads"))
+        output_layout.addWidget(self.scrape_output_input)
+
+        browse_btn = QPushButton("选择目录")
+        browse_btn.clicked.connect(self.select_scrape_output_dir)
+        output_layout.addWidget(browse_btn)
+        form_layout.addLayout(output_layout)
+
+        options_layout = QHBoxLayout()
+        self.include_archived_checkbox = QCheckBox("包含归档帖子")
+        self.include_archived_checkbox.setChecked(True)
+        options_layout.addWidget(self.include_archived_checkbox)
+        options_layout.addStretch()
+
+        self.start_scrape_button = QPushButton("开始抓取广告")
+        self.start_scrape_button.clicked.connect(self.start_ad_scrape)
+        options_layout.addWidget(self.start_scrape_button)
+        form_layout.addLayout(options_layout)
+
+        self.scrape_progress_bar = QProgressBar()
+        self.scrape_progress_bar.setRange(0, 1)
+        self.scrape_progress_bar.setValue(0)
+        form_layout.addWidget(self.scrape_progress_bar)
+
+        self.scrape_summary_label = QLabel("尚未开始抓取")
+        form_layout.addWidget(self.scrape_summary_label)
+
+        layout.addWidget(form_group)
+
+        results_group = QGroupBox("抓取结果")
+        results_layout = QVBoxLayout(results_group)
+
+        self.scrape_results_table = QTableWidget()
+        self.scrape_results_table.setColumnCount(4)
+        self.scrape_results_table.setHorizontalHeaderLabels(["标题", "商品链接", "图片数", "输出目录"])
+        self.scrape_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.scrape_results_table.setAlternatingRowColors(True)
+        self.scrape_results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.scrape_results_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        results_layout.addWidget(self.scrape_results_table)
+
+        layout.addWidget(results_group)
+
+        self.tab_widget.addTab(scraper_widget, "广告抓取")
 
     def create_control_bar(self, parent_layout):
         """创建底部控制栏"""
@@ -2377,6 +2502,133 @@ class MainWindow(QMainWindow):
                     self.comment_accounts_combo.setCurrentIndex(current_index)
             elif current_index < self.comment_accounts_combo.count():
                 self.comment_accounts_combo.setCurrentIndex(current_index)
+
+        if hasattr(self, 'scrape_account_combo'):
+            current_token = self.scrape_account_combo.currentData()
+            self.scrape_account_combo.clear()
+
+            valid_accounts = [acc for acc in self.discord_manager.accounts if acc.is_active and acc.is_valid]
+            for account in valid_accounts:
+                label = account.alias
+                if account.user_info and isinstance(account.user_info, dict):
+                    username = account.user_info.get("name", "Unknown")
+                    label = f"{label} ({username})"
+                self.scrape_account_combo.addItem(label, account.token)
+
+            if not valid_accounts:
+                self.scrape_account_combo.addItem("暂无已验证账号", None)
+            elif current_token is not None:
+                selected_index = self.scrape_account_combo.findData(current_token)
+                if selected_index >= 0:
+                    self.scrape_account_combo.setCurrentIndex(selected_index)
+
+    def select_scrape_output_dir(self):
+        """选择广告抓取输出目录"""
+        current_dir = self.scrape_output_input.text().strip() or os.getcwd()
+        selected_dir = QFileDialog.getExistingDirectory(self, "选择输出目录", current_dir)
+        if selected_dir:
+            self.scrape_output_input.setText(selected_dir)
+
+    def start_ad_scrape(self):
+        """启动广告抓取"""
+        if self.worker_thread and self.worker_thread.running:
+            QMessageBox.warning(self, "无法开始", "请先停止账号，再开始广告抓取")
+            return
+
+        if self.ad_scraper_thread and self.ad_scraper_thread.isRunning():
+            QMessageBox.information(self, "抓取中", "当前已经有一个广告抓取任务在运行")
+            return
+
+        token = self.scrape_account_combo.currentData()
+        channel_url = self.scrape_channel_input.text().strip()
+        output_root = self.scrape_output_input.text().strip()
+
+        if not token:
+            QMessageBox.warning(self, "错误", "请先选择一个可用账号")
+            return
+
+        if not channel_url:
+            QMessageBox.warning(self, "错误", "请输入 Discord 频道链接")
+            return
+
+        if not output_root:
+            QMessageBox.warning(self, "错误", "请选择输出目录")
+            return
+
+        try:
+            parse_discord_channel_url(channel_url)
+        except ValueError as exc:
+            QMessageBox.warning(self, "链接错误", str(exc))
+            return
+
+        os.makedirs(output_root, exist_ok=True)
+        self.scrape_results_table.setRowCount(0)
+        self.scrape_summary_label.setText("正在抓取，请稍候...")
+        self.scrape_progress_bar.setRange(0, 0)
+        self.start_scrape_button.setEnabled(False)
+
+        self.ad_scraper_thread = AdScraperThread(
+            token=token,
+            channel_url=channel_url,
+            output_root=output_root,
+            include_archived=self.include_archived_checkbox.isChecked(),
+        )
+        self.ad_scraper_thread.log_message.connect(self.on_ad_scrape_log)
+        self.ad_scraper_thread.crawl_finished.connect(self.on_ad_scrape_finished)
+        self.ad_scraper_thread.error_occurred.connect(self.on_ad_scrape_error)
+        self.ad_scraper_thread.start()
+
+        self.add_log("开始执行广告抓取任务", "info")
+
+    def on_ad_scrape_log(self, message):
+        """处理广告抓取日志"""
+        self.add_log(f"[广告抓取] {message}", "info")
+
+    def on_ad_scrape_finished(self, payload):
+        """广告抓取完成"""
+        ads = payload.get("ads", [])
+        self.scrape_progress_bar.setRange(0, 1)
+        self.scrape_progress_bar.setValue(1)
+        self.start_scrape_button.setEnabled(True)
+        self.populate_scrape_results(ads)
+        self.scrape_summary_label.setText(
+            f"抓取完成，共 {len(ads)} 条广告，输出目录: {payload.get('output_root', '')}"
+        )
+        self.add_log(
+            f"广告抓取完成，频道 {payload.get('channel_name', '')} 共导出 {len(ads)} 条",
+            "success",
+        )
+        self.ad_scraper_thread = None
+
+    def on_ad_scrape_error(self, error_msg):
+        """广告抓取失败"""
+        self.scrape_progress_bar.setRange(0, 1)
+        self.scrape_progress_bar.setValue(0)
+        self.start_scrape_button.setEnabled(True)
+        self.scrape_summary_label.setText(f"抓取失败: {error_msg}")
+        self.add_log(f"广告抓取失败: {error_msg}", "error")
+        QMessageBox.critical(self, "广告抓取失败", error_msg)
+        self.ad_scraper_thread = None
+
+    def populate_scrape_results(self, ads):
+        """填充广告抓取结果"""
+        self.scrape_results_table.setRowCount(len(ads))
+
+        for row, ad in enumerate(ads):
+            title_item = QTableWidgetItem(ad.get("title", ""))
+            title_item.setToolTip(ad.get("source_message_url", ""))
+            self.scrape_results_table.setItem(row, 0, title_item)
+
+            link_item = QTableWidgetItem(ad.get("link", ""))
+            link_item.setToolTip(ad.get("link", ""))
+            self.scrape_results_table.setItem(row, 1, link_item)
+
+            image_count_item = QTableWidgetItem(str(ad.get("image_count", 0)))
+            self.scrape_results_table.setItem(row, 2, image_count_item)
+
+            output_item = QTableWidgetItem(ad.get("output_dir", ""))
+            output_item.setToolTip(ad.get("output_dir", ""))
+            self.scrape_results_table.setItem(row, 3, output_item)
 
     def update_rules_list(self):
         """更新规则表格显示"""

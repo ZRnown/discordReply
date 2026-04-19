@@ -34,5 +34,40 @@
       "delay_max": 3.0,
       "is_active": true
     }
+  ],
+  "broadcast_rules": [
+    {
+      "name": "每日问候",
+      "guild_id": 123456789012345678,
+      "channel_ids": [111111111111111111, 222222222222222222],
+      "message": "🌟 早上好！新的一天开始了，祝大家都有好心情！\n\n💡 今天也要加油哦~",
+      "interval_minutes": 1440,
+      "account_tokens": ["YOUR_ACCOUNT_TOKEN_1", "YOUR_ACCOUNT_TOKEN_2"],
+      "broadcast_mode": "parallel",
+      "enable_failover": true,
+      "is_active": true
+    },
+    {
+      "name": "活动通知",
+      "guild_id": 123456789012345678,
+      "channel_ids": [],
+      "message": "🎉 本服务器即将举行活动！\n📅 时间：每周六晚8点\n📍 地点：活动频道\n\n欢迎大家踊跃参加！",
+      "interval_minutes": 60,
+      "account_tokens": ["YOUR_ACCOUNT_TOKEN_1"],
+      "broadcast_mode": "rotation",
+      "enable_failover": true,
+      "is_active": false
+    },
+    {
+      "name": "服务器提醒",
+      "guild_id": 987654321098765432,
+      "channel_ids": [333333333333333333],
+      "message": "📢 温馨提醒：\n• 请遵守服务器规则\n• 保持友好交流\n• 遇到问题随时联系管理员\n\n感谢您的合作！",
+      "interval_minutes": 480,
+      "account_tokens": ["YOUR_ACCOUNT_TOKEN_1", "YOUR_ACCOUNT_TOKEN_2", "YOUR_ACCOUNT_TOKEN_3"],
+      "broadcast_mode": "parallel",
+      "enable_failover": true,
+      "is_active": true
+    }
   ]
 }
