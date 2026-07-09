@@ -699,6 +699,8 @@ class MainWindow(QMainWindow):
         self.worker_thread = None
         self.workspaces = []
         self.active_workspace_index = 0
+        self.show_workspace_entries = False
+        self.show_posting_comment_entries = False
 
         self.init_ui()
         self.load_config()
@@ -752,7 +754,8 @@ class MainWindow(QMainWindow):
         workspace_layout.addWidget(delete_workspace_btn)
 
         workspace_layout.addStretch()
-        main_layout.addLayout(workspace_layout)
+        if self.show_workspace_entries:
+            main_layout.addLayout(workspace_layout)
 
         # 创建标签页
         self.tab_widget = QTabWidget()
@@ -881,8 +884,8 @@ class MainWindow(QMainWindow):
         rotation_row = QHBoxLayout()
 
         # 启用轮换
-        self.rotation_enabled_checkbox = QCheckBox("启用账号轮换")
-        self.rotation_enabled_checkbox.setToolTip("启用后，当账号被频率限制时会自动切换到其他账号发送消息")
+        self.rotation_enabled_checkbox = QCheckBox("启用账号轮询回复")
+        self.rotation_enabled_checkbox.setToolTip("启用后，关键词命中只用一个可用账号回复，下一次命中再轮到下一个可用账号")
         self.rotation_enabled_checkbox.stateChanged.connect(self.on_rotation_enabled_changed)
         rotation_row.addWidget(self.rotation_enabled_checkbox)
 
@@ -928,12 +931,12 @@ class MainWindow(QMainWindow):
         reply_accounts_layout.setContentsMargins(10, 10, 10, 10)
 
         self.reply_accounts_combo = QComboBox()
-        self.reply_accounts_combo.addItem("随机使用所有账号", None)
+        self.reply_accounts_combo.addItem("轮询使用所有可用账号", None)
         # 添加具体账号选项
         for account in self.discord_manager.accounts:
             if account.is_active and account.is_valid:
                 self.reply_accounts_combo.addItem(f"仅使用 {account.alias}", account.token)
-        self.reply_accounts_combo.setCurrentIndex(0)  # 默认随机使用所有账号
+        self.reply_accounts_combo.setCurrentIndex(0)  # 默认轮询使用所有可用账号
 
         reply_accounts_layout.addWidget(QLabel("回复账号:"))
         reply_accounts_layout.addWidget(self.reply_accounts_combo)
@@ -966,7 +969,7 @@ class MainWindow(QMainWindow):
 
         import_rule_btn = QPushButton("自动读取")
         import_rule_btn.clicked.connect(self.import_reply_materials)
-        header_layout.addWidget(import_rule_btn)
+        import_rule_btn.hide()
 
         clear_rules_btn = QPushButton("一键删除")
         clear_rules_btn.clicked.connect(self.clear_rules)
@@ -1152,6 +1155,7 @@ class MainWindow(QMainWindow):
     def create_posting_tab(self):
         """创建自动发帖标签页"""
         posting_widget = QWidget()
+        self.posting_widget = posting_widget
         layout = QVBoxLayout(posting_widget)
 
         # 账号轮换与选择设置
@@ -1314,11 +1318,13 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(tasks_group)
 
-        self.tab_widget.addTab(posting_widget, "自动发帖")
+        if self.show_posting_comment_entries:
+            self.tab_widget.addTab(posting_widget, "自动发帖")
 
     def create_comment_tab(self):
         """创建自动评论标签页"""
         comment_widget = QWidget()
+        self.comment_widget = comment_widget
         layout = QVBoxLayout(comment_widget)
 
         # 账号轮换与选择设置
@@ -1471,7 +1477,8 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(tasks_group)
 
-        self.tab_widget.addTab(comment_widget, "自动评论")
+        if self.show_posting_comment_entries:
+            self.tab_widget.addTab(comment_widget, "自动评论")
 
     def create_control_bar(self, parent_layout):
         """创建底部控制栏"""
@@ -1578,7 +1585,10 @@ class MainWindow(QMainWindow):
             }
         """)
         self.posting_toggle_button.clicked.connect(self.toggle_auto_posting)
-        function_layout.addWidget(self.posting_toggle_button)
+        if self.show_posting_comment_entries:
+            function_layout.addWidget(self.posting_toggle_button)
+        else:
+            self.posting_toggle_button.hide()
 
         # 自动评论按钮
         self.comment_toggle_button = QPushButton("💬 自动评论: 关闭")
@@ -1606,7 +1616,10 @@ class MainWindow(QMainWindow):
             }
         """)
         self.comment_toggle_button.clicked.connect(self.toggle_auto_comment)
-        function_layout.addWidget(self.comment_toggle_button)
+        if self.show_posting_comment_entries:
+            function_layout.addWidget(self.comment_toggle_button)
+        else:
+            self.comment_toggle_button.hide()
 
         control_layout.addWidget(function_group)
 
@@ -2128,10 +2141,6 @@ class MainWindow(QMainWindow):
         if len(self.workspaces) <= 1:
             QMessageBox.information(self, "提示", "至少需要保留一个页面")
             return
-        if (self.discord_manager.reply_enabled or self.discord_manager.posting_enabled or
-                self.discord_manager.comment_enabled):
-            QMessageBox.warning(self, "提示", "请先关闭自动回复/发帖/评论后再删除页面")
-            return
         index = self.workspace_tabbar.currentIndex()
         if not (0 <= index < len(self.workspaces)):
             return
@@ -2147,6 +2156,7 @@ class MainWindow(QMainWindow):
             self.active_workspace_index = len(self.workspaces) - 1
         self.refresh_workspace_tabs()
         self.load_workspace(self.active_workspace_index)
+        self.refresh_runtime_contexts_from_workspaces()
         self.save_config()
 
     def update_function_buttons(self):
@@ -2303,7 +2313,7 @@ class MainWindow(QMainWindow):
             current_token = self.reply_accounts_combo.currentData()
             current_index = self.reply_accounts_combo.currentIndex()
             self.reply_accounts_combo.clear()
-            self.reply_accounts_combo.addItem("随机使用所有账号", None)
+            self.reply_accounts_combo.addItem("轮询使用所有可用账号", None)
 
             # 添加具体账号选项
             for account in self.discord_manager.accounts:
@@ -4911,6 +4921,7 @@ class MainWindow(QMainWindow):
                 self.discord_manager.posting_tasks.remove(task_to_remove)
                 self.update_posting_tasks_list()
                 self.save_config()
+                self.refresh_runtime_contexts_from_workspaces()
                 self.add_log(f"发帖任务已删除: {task_id}", "info")
                 QMessageBox.information(self, "成功", "发帖任务已删除")
             else:
@@ -4933,6 +4944,7 @@ class MainWindow(QMainWindow):
             self.discord_manager.posting_tasks.clear()
             self.update_posting_tasks_list()
             self.save_config()
+            self.refresh_runtime_contexts_from_workspaces()
             self.add_log("所有发帖任务已删除", "info")
 
     def remove_comment_task_by_row(self, row):

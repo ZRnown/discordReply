@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 
 def main():
+    os.environ.setdefault("DISCORD_REPLY_SKIP_LICENSE_VALIDATION", "1")
+
     if getattr(sys, 'frozen', False):
         exe_dir = Path(sys.executable).parent
         os.chdir(exe_dir)

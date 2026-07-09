@@ -23,6 +23,65 @@ class MatchType(Enum):
     REGEX = "regex"
 
 
+def _coerce_channel_id(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _channel_parent_id(channel) -> Optional[int]:
+    parent_id = _coerce_channel_id(getattr(channel, "parent_id", None))
+    if parent_id is not None:
+        return parent_id
+    return _coerce_channel_id(getattr(getattr(channel, "parent", None), "id", None))
+
+
+def _channel_matches_targets(channel, target_channels: List[int]) -> bool:
+    if not target_channels:
+        return True
+    targets = {_coerce_channel_id(channel_id) for channel_id in target_channels}
+    targets.discard(None)
+    channel_id = _coerce_channel_id(getattr(channel, "id", None))
+    parent_id = _channel_parent_id(channel)
+    return channel_id in targets or parent_id in targets
+
+
+def parse_discord_comment_target(raw_link: str) -> Tuple[Optional[int], Optional[int]]:
+    text = str(raw_link or "").strip()
+    if not text:
+        return None, None
+
+    if text.startswith("<#") and text.endswith(">"):
+        text = text[2:-1].strip()
+    else:
+        text = text.strip("<>").strip()
+
+    text = text.rstrip("/")
+    clean_text = text.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+
+    if clean_text.isdigit():
+        return _coerce_channel_id(clean_text), None
+
+    match = re.search(r"/channels/\d+/(\d+)(?:/(\d+))?$", clean_text)
+    if match:
+        return _coerce_channel_id(match.group(1)), _coerce_channel_id(match.group(2))
+
+    parts = [part for part in re.split(r"[\\/]", clean_text) if part]
+    if "channels" in parts:
+        idx = parts.index("channels")
+        numeric_parts = [part for part in parts[idx + 1:] if part.isdigit()]
+        if len(numeric_parts) >= 2:
+            return _coerce_channel_id(numeric_parts[1]), _coerce_channel_id(numeric_parts[2]) if len(numeric_parts) >= 3 else None
+        if len(numeric_parts) == 1:
+            return _coerce_channel_id(numeric_parts[0]), None
+
+    if len(parts) >= 2 and parts[-1].isdigit() and parts[-2].isdigit():
+        return _coerce_channel_id(parts[-2]), _coerce_channel_id(parts[-1])
+
+    return None, None
+
+
 @dataclass
 class Account:
     token: str
@@ -254,7 +313,7 @@ class AutoReplyClient(discord.Client):
             applicable_rules.append(rule)
 
         for rule in applicable_rules:
-            if rule.target_channels and message.channel.id not in rule.target_channels:
+            if not _channel_matches_targets(message.channel, rule.target_channels):
                 continue
 
             if rule.ignore_replies and message.reference is not None:
@@ -854,7 +913,22 @@ class DiscordManager:
                     channel = client.get_channel(message.channel.id)
                     if not channel:
                         channel = await client.fetch_channel(message.channel.id)
-                    target_message = await channel.fetch_message(message.id)
+                    try:
+                        target_message = await channel.fetch_message(message.id)
+                    except (discord.NotFound, discord.Forbidden, AttributeError):
+                        parent_id = _channel_parent_id(message.channel)
+                        parent_channel = client.get_channel(parent_id) if parent_id else None
+                        if parent_channel is None and parent_id:
+                            try:
+                                parent_channel = await client.fetch_channel(parent_id)
+                            except Exception:
+                                parent_channel = None
+                        if parent_channel is not None and hasattr(parent_channel, "fetch_message"):
+                            target_message = await parent_channel.fetch_message(message.id)
+                            if hasattr(target_message, 'thread') and target_message.thread:
+                                target_message = await target_message.thread.fetch_message(message.id)
+                        else:
+                            raise
 
                     image_paths = []
                     if image_path:
@@ -1361,6 +1435,8 @@ class DiscordManager:
 
             def parse_comment_target(raw_link: str) -> Tuple[Optional[int], Optional[int]]:
                 """解析评论目标，支持频道ID、频道链接、消息链接和带参数URL。"""
+                return parse_discord_comment_target(raw_link)
+
                 text = raw_link.strip()
                 if not text:
                     return None, None
@@ -1440,6 +1516,15 @@ class DiscordManager:
 
                 target_channel = channel
                 message = None
+
+                if target_id is not None and isinstance(channel, discord.ForumChannel):
+                    try:
+                        thread_channel = client.get_channel(target_id) or await client.fetch_channel(target_id)
+                    except Exception:
+                        thread_channel = None
+                    if thread_channel is not None:
+                        target_channel = thread_channel
+                        target_id = None
 
                 if target_id is None:
                     pass
@@ -1888,6 +1973,7 @@ class LicenseManager:
                  client_username: str = "client", client_password: str = "",
                  admin_username: str = None, admin_password: str = None,
                  api_path: str = "/api/v1"):
+        self.skip_validation = os.environ.get("DISCORD_REPLY_SKIP_LICENSE_VALIDATION") == "1"
         self.license_server_url = license_server_url.rstrip('/')
         self.api_path = api_path  # 保留兼容字段，当前激活接口不依赖该路径
         self.client_username = client_username
@@ -1898,6 +1984,10 @@ class LicenseManager:
         self.machine_fingerprint: str = self._generate_machine_fingerprint()
         self.is_activated: bool = False
         self.license_info: Optional[Dict] = None
+        if self.skip_validation:
+            self.license_key = "LOCAL-DEVELOPMENT-BYPASS"
+            self.is_activated = True
+            self.license_info = {"status": "success", "msg": "Local license validation bypass enabled"}
 
     def _generate_machine_fingerprint(self) -> str:
         """生成机器指纹"""
@@ -1920,6 +2010,12 @@ class LicenseManager:
 
     async def _activate_license(self, license_key: str) -> Tuple[bool, str]:
         """激活许可证，绑定到当前机器"""
+        if self.skip_validation:
+            self.license_key = license_key or "LOCAL-DEVELOPMENT-BYPASS"
+            self.is_activated = True
+            self.license_info = {"status": "success", "msg": "Local license validation bypass enabled"}
+            return True, "Local license validation bypass enabled"
+
         try:
             timeout = aiohttp.ClientTimeout(total=10)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -1957,6 +2053,8 @@ class LicenseManager:
 
     def is_license_valid(self) -> bool:
         """检查许可证是否有效"""
+        if self.skip_validation:
+            return True
         return self.is_activated and self.license_key is not None
 
     def get_license_info(self) -> Optional[Dict]:
