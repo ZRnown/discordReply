@@ -10,6 +10,11 @@ import subprocess
 import platform
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 def check_requirements():
     """检查构建要求"""
     print("🔍 检查构建要求...")
@@ -67,6 +72,8 @@ def build_exe():
         "--windows-company-name=Discord Auto Reply",
         "--windows-product-name=Discord Auto Reply Tool",
         "--windows-file-description=Discord Auto Reply Tool",
+        "--windows-file-version=1.0.0.0",
+        "--windows-product-version=1.0.0.0",
         "--enable-plugin=pyside6",
         "--enable-plugin=multiprocessing",
         "--windows-console-mode=disable",
