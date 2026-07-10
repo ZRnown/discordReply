@@ -120,6 +120,9 @@ def compress_exe():
         subprocess.run(["upx", "--best", str(exe_path)], check=True)
         print("✅ EXE 压缩完成")
         return True
+    except FileNotFoundError:
+        print("⚠️  UPX 未安装，跳过压缩")
+        return True
     except subprocess.CalledProcessError as e:
         print(f"❌ EXE 压缩失败: {e}")
         return False
