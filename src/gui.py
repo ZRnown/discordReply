@@ -3502,6 +3502,10 @@ class MainWindow(QMainWindow):
 
     def add_log(self, message, level="info"):
         """添加日志"""
+        message_text = str(message)
+        if "回复成功" not in message_text and "回复失败" not in message_text:
+            return
+
         import datetime
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 

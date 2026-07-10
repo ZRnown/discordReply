@@ -208,25 +208,36 @@ class AutoReplyClient(discord.Client):
             # 过滤出存在的文件
             image_paths = [path for path in image_paths if os.path.exists(path)]
 
-        if image_paths:
-            # 发送图片文件
-            try:
+        try:
+            if image_paths:
                 files = [discord.File(path) for path in image_paths]
                 if text.strip():
                     await message.reply(text, files=files)
                 else:
                     await message.reply(files=files)
-                return True
-            except Exception as e:
-                error_msg = f"发送图片失败: {e}"
-                print(error_msg)
-                if self.log_callback:
-                    self.log_callback(error_msg)
-                return False
-        else:
-            # 只发送文本
-            await message.reply(text)
+            else:
+                await message.reply(text)
             return True
+        except Exception as reply_error:
+            channel = getattr(message, "channel", None)
+            if channel is not None and isinstance(channel, discord.Thread):
+                try:
+                    if image_paths:
+                        files = [discord.File(path) for path in image_paths]
+                        if text.strip():
+                            await channel.send(text, files=files)
+                        else:
+                            await channel.send(files=files)
+                    else:
+                        await channel.send(text)
+                    return True
+                except Exception as send_error:
+                    if self.log_callback:
+                        self.log_callback(f"回复失败: {send_error}")
+                    return False
+            if self.log_callback:
+                self.log_callback(f"回复失败: {reply_error}")
+            return False
 
     async def on_ready(self):
         try:
@@ -913,22 +924,25 @@ class DiscordManager:
                     channel = client.get_channel(message.channel.id)
                     if not channel:
                         channel = await client.fetch_channel(message.channel.id)
+                    target_message = None
                     try:
                         target_message = await channel.fetch_message(message.id)
                     except (discord.NotFound, discord.Forbidden, AttributeError):
-                        parent_id = _channel_parent_id(message.channel)
-                        parent_channel = client.get_channel(parent_id) if parent_id else None
-                        if parent_channel is None and parent_id:
-                            try:
-                                parent_channel = await client.fetch_channel(parent_id)
-                            except Exception:
-                                parent_channel = None
-                        if parent_channel is not None and hasattr(parent_channel, "fetch_message"):
-                            target_message = await parent_channel.fetch_message(message.id)
-                            if hasattr(target_message, 'thread') and target_message.thread:
-                                target_message = await target_message.thread.fetch_message(message.id)
-                        else:
-                            raise
+                        if not isinstance(channel, discord.Thread):
+                            parent_id = _channel_parent_id(message.channel)
+                            parent_channel = client.get_channel(parent_id) if parent_id else None
+                            if parent_channel is None and parent_id:
+                                try:
+                                    parent_channel = await client.fetch_channel(parent_id)
+                                except Exception:
+                                    parent_channel = None
+                            if parent_channel is not None and hasattr(parent_channel, "fetch_message"):
+                                target_message = await parent_channel.fetch_message(message.id)
+                                if hasattr(target_message, 'thread') and target_message.thread:
+                                    channel = target_message.thread
+                                    target_message = await channel.fetch_message(message.id)
+                            else:
+                                raise
 
                     image_paths = []
                     if image_path:
@@ -941,14 +955,32 @@ class DiscordManager:
                             image_paths = [image_path]
                         image_paths = [path for path in image_paths if os.path.exists(path)]
 
-                    if image_paths:
-                        files = [discord.File(path) for path in image_paths]
-                        if reply_text.strip():
-                            await target_message.reply(reply_text, files=files)
+                    async def send_to_thread():
+                        if image_paths:
+                            files = [discord.File(path) for path in image_paths]
+                            if reply_text.strip():
+                                await channel.send(reply_text, files=files)
+                            else:
+                                await channel.send(files=files)
                         else:
-                            await target_message.reply(files=files)
-                    else:
-                        await target_message.reply(reply_text)
+                            await channel.send(reply_text)
+
+                    try:
+                        if target_message is None:
+                            raise AttributeError("target message unavailable")
+                        if image_paths:
+                            files = [discord.File(path) for path in image_paths]
+                            if reply_text.strip():
+                                await target_message.reply(reply_text, files=files)
+                            else:
+                                await target_message.reply(files=files)
+                        else:
+                            await target_message.reply(reply_text)
+                    except Exception:
+                        if isinstance(channel, discord.Thread):
+                            await send_to_thread()
+                        else:
+                            raise
 
                     self.replied_messages.add(message.id)
                     if len(self.replied_messages) > self.max_replied_messages:
@@ -978,18 +1010,18 @@ class DiscordManager:
                     if e.code == 20016:  # 慢速模式
                         account.rate_limit_until = current_time + 600  # 10分钟限制
                         if self.log_callback:
-                            self.log_callback(f"⚠️ [{account.alias}] 触发慢速模式，10分钟内无法发送")
+                            self.log_callback(f"❌ [{account.alias}] 回复失败: 触发慢速模式")
                     elif e.code == 50035:  # 无效表单内容
                         if self.log_callback:
-                            self.log_callback(f"❌ [{account.alias}] 发送失败: 无效内容")
+                            self.log_callback(f"❌ [{account.alias}] 回复失败: 无效内容")
                     else:
                         if self.log_callback:
-                            self.log_callback(f"❌ [{account.alias}] 发送失败: HTTP {e.code}")
+                            self.log_callback(f"❌ [{account.alias}] 回复失败: HTTP {e.code}")
                     continue
 
                 except Exception as e:
                     if self.log_callback:
-                        self.log_callback(f"❌ [{account.alias}] 发送异常: {str(e)}")
+                        self.log_callback(f"❌ [{account.alias}] 回复失败: {str(e)}")
                     continue
 
         finally:
