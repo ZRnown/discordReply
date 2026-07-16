@@ -1,4 +1,4 @@
-discord.py-self==2.0.1
+discord.py-self==2.1.0
 PySide6==6.8.0.2
 nuitka>=1.8.0
 aiohttp>=3.8.0

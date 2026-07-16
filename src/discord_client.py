@@ -102,8 +102,8 @@ class Rule:
     reply: str
     match_type: MatchType
     target_channels: List[int]
-    delay_min: float = 0.1
-    delay_max: float = 1.0
+    delay_min: float = 3.0
+    delay_max: float = 10.0
     is_active: bool = True
     ignore_replies: bool = True  # 是否忽略回复他人的消息
     ignore_mentions: bool = True  # 是否忽略包含@他人的消息
@@ -411,21 +411,15 @@ class TokenValidator:
         if not token:
             return False, None, "账号为空"
 
-        # 1. 先尝试 HTTP 验证 (更稳)
+        # 只使用 HTTP 验证。
+        # 已移除 WebSocket 验证回退: 每次验证都新建 discord.Client() 会触发
+        # 一次完整的网关 IDENTIFY 握手，是 Discord 检测 self-bot 的高权重信号。
+        # HTTP 验证已足够判断 token 有效性，不需要额外登录网关。
         try:
             http_res = await TokenValidator._validate_token_http(token)
-            if http_res[0] is not None:
-                return http_res
+            return http_res
         except Exception as e:
-            # HTTP验证完全失败，继续WebSocket验证
-            pass
-
-        # 2. 备选: WebSocket 验证
-        try:
-            ws_res = await TokenValidator._validate_token_websocket(token)
-            return ws_res
-        except Exception as e:
-            return False, None, "所有验证方法都失败，请检查账号和网络连接"
+            return False, None, f"验证失败: {str(e)}"
 
     @staticmethod
     def _detect_token_type(token: str) -> str:
@@ -436,50 +430,68 @@ class TokenValidator:
 
     @staticmethod
     async def _validate_token_http(token: str) -> Tuple[Optional[bool], Optional[Dict], Optional[str]]:
-        import aiohttp
-        token = token.strip()
-        if not token: return False, None, "账号为空"
+        """
+        使用 discord.py-self 内置的 HTTP 客户端验证 Token。
 
-        headers = {'Authorization': token, 'User-Agent': 'DiscordBot/1.0'}
-        timeout = aiohttp.ClientTimeout(total=10)  # 设置10秒超时
+        重要: 不能用裸 aiohttp + 'DiscordBot/1.0' UA 来验证用户 token。
+        discord.py-self 的 HTTPClient 会自动设置与真实 Discord 客户端一致的
+        User-Agent、X-Super-Properties、X-Fingerprint 等反检测请求头，
+        避免因请求头指纹矛盾暴露 self-bot 身份。
+        """
+        token = token.strip()
+        if not token:
+            return False, None, "账号为空"
+
+        from discord.http import HTTPClient
+
+        http = None
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get('https://discord.com/api/v10/users/@me', headers=headers) as resp:
-                    if resp.status == 200:
-                        try:
-                            data = await resp.json()
-                            if not data:
-                                return False, None, "响应数据为空"
-                            user_info = {
-                                'id': data.get('id'),
-                                'name': data.get('username'),
-                                'discriminator': data.get('discriminator', '0000'),
-                                'avatar_url': f"https://cdn.discordapp.com/avatars/{data.get('id', 'unknown')}/{data.get('avatar', 'unknown')}.png" if data.get('avatar') else None,
-                                'bot': data.get('bot', False),
-                                'token_type': 'bot' if data.get('bot') else 'user'
-                            }
-                            return True, user_info, None
-                        except Exception as json_error:
-                            return False, None, f"解析响应失败: {str(json_error)}"
-                    elif resp.status == 401:
-                        return False, None, "账号无效"
-                    elif resp.status == 403:
-                        return False, None, "账号权限不足"
-                    elif resp.status == 429:
-                        return False, None, "请求过于频繁，请稍后再试"
-                    else:
-                        return False, None, f"HTTP {resp.status}"
+            loop = asyncio.get_event_loop()
+            http = HTTPClient(loop)
+            # static_login 会自动携带正确的请求头并调用 /users/@me
+            # 如果 token 无效会抛出 LoginFailure (401) 或 HTTPException
+            user = await asyncio.wait_for(
+                http.static_login(token),
+                timeout=15.0
+            )
+
+            if not user:
+                return False, None, "响应数据为空"
+
+            user_info = {
+                'id': str(user.id),
+                'name': user.name,
+                'discriminator': getattr(user, 'discriminator', '0000'),
+                'avatar_url': str(user.avatar.url) if user.avatar else None,
+                'bot': getattr(user, 'bot', False),
+                'token_type': 'bot' if getattr(user, 'bot', False) else 'user'
+            }
+            return True, user_info, None
+
         except asyncio.TimeoutError:
             return None, None, "连接超时，请检查网络"
-        except aiohttp.ClientError as client_error:
-            return None, None, f"网络连接错误: {str(client_error)}"
+        except discord.LoginFailure:
+            # static_login 在 401 时抛出 LoginFailure
+            return False, None, "账号无效，token 已失效"
+        except discord.HTTPException as e:
+            status = getattr(e, 'status', None) or getattr(e, 'code', None)
+            if status == 403:
+                return False, None, "账号权限不足"
+            elif status == 429:
+                return False, None, "请求过于频繁，请稍后重试"
+            else:
+                return False, None, f"HTTP {status}"
         except Exception as e:
-            # 避免返回复杂的错误对象，只返回字符串
             error_msg = str(e)
-            # 如果错误信息太长或包含特殊字符，简化它
             if len(error_msg) > 100 or "'" in error_msg or '"' in error_msg:
                 return None, None, "验证请求失败"
             return None, None, error_msg
+        finally:
+            if http:
+                try:
+                    await http.close()
+                except Exception:
+                    pass
 
     @staticmethod
     async def _validate_token_websocket(token: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
@@ -647,7 +659,7 @@ class DiscordManager:
         self.accounts = [acc for acc in self.accounts if acc.token != token]
 
     def add_rule(self, keywords: List[str], reply: str, match_type: MatchType,
-                 target_channels: List[int], delay_min: float = 0.1, delay_max: float = 1.0,
+                 target_channels: List[int], delay_min: float = 3.0, delay_max: float = 10.0,
                  ignore_replies: bool = True, ignore_mentions: bool = True,
                  case_sensitive: bool = False, image_path: Optional[str] = None,
                  account_ids: Optional[List[str]] = None):
