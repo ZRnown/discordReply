@@ -32,6 +32,17 @@ class _FakeChannel:
         return self.target_message
 
 
+class _CreatingChannel(_FakeChannel):
+    def __init__(self, target_message, created_thread):
+        super().__init__(target_message)
+        self.created_thread = created_thread
+        self.create_calls = []
+
+    async def create_thread(self, *, name, message):
+        self.create_calls.append((name, message))
+        return self.created_thread
+
+
 class _FakeClient:
     def __init__(self, account, channel):
         self.account = account
@@ -62,6 +73,14 @@ class ReplyRotationTests(unittest.TestCase):
         self.assertIsNotNone(account)
         self.assertEqual(account.token, "token-b")
 
+    def test_only_one_listener_claims_a_message_before_delay(self):
+        manager = DiscordManager()
+
+        self.assertTrue(manager.claim_reply_message(123))
+        self.assertFalse(manager.claim_reply_message(123))
+        manager.release_reply_message(123)
+        self.assertTrue(manager.claim_reply_message(123))
+
 
 class ReplyThreadRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_forum_starter_reply_is_sent_to_thread(self):
@@ -77,6 +96,27 @@ class ReplyThreadRoutingTests(unittest.IsolatedAsyncioTestCase):
         success = await manager.send_rotated_reply(message, "hello", force=True)
 
         self.assertTrue(success)
+        self.assertEqual(thread.sent, [("hello", None)])
+        self.assertEqual(target_message.reply_calls, [])
+
+    async def test_normal_message_creates_thread_before_replying(self):
+        manager = DiscordManager()
+        account = Account("token-a", is_valid=True)
+        thread = _FakeThread()
+        target_message = _FakeTargetMessage(None)
+        target_message.content = "keyword message"
+        target_message.author = SimpleNamespace(name="author")
+        target_message.flags = SimpleNamespace(has_thread=False)
+        channel = _CreatingChannel(target_message, thread)
+        manager.accounts = [account]
+        manager.clients = [_FakeClient(account, channel)]
+        message = SimpleNamespace(id=456, channel=SimpleNamespace(id=123))
+
+        success = await manager.send_rotated_reply(message, "hello", force=True)
+
+        self.assertTrue(success)
+        self.assertEqual(len(channel.create_calls), 1)
+        self.assertIs(channel.create_calls[0][1], target_message)
         self.assertEqual(thread.sent, [("hello", None)])
         self.assertEqual(target_message.reply_calls, [])
 

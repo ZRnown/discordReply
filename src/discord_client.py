@@ -47,6 +47,13 @@ def _channel_matches_targets(channel, target_channels: List[int]) -> bool:
     return channel_id in targets or parent_id in targets
 
 
+def _build_reply_thread_name(message) -> str:
+    content = re.sub(r"\s+", " ", str(getattr(message, "content", "") or "")).strip()
+    author_name = str(getattr(getattr(message, "author", None), "name", "") or "").strip()
+    name = content[:80] if content else (f"{author_name} 的消息" if author_name else "自动回复")
+    return name.strip()[:95] or "自动回复"
+
+
 def parse_discord_comment_target(raw_link: str) -> Tuple[Optional[int], Optional[int]]:
     text = str(raw_link or "").strip()
     if not text:
@@ -334,6 +341,11 @@ class AutoReplyClient(discord.Client):
                 continue
 
             if self._check_match(message.content, rule):
+                claimed = False
+                if self.discord_manager:
+                    claimed = self.discord_manager.claim_reply_message(message.id)
+                    if not claimed:
+                        break
                 match_msg = f"[{self.account.alias}] 🎯 匹配到关键词 | 消息: '{message.content}' | 来自: {message.author.name} | 频道: #{message.channel.name}"
                 reply_msg = f"[{self.account.alias}] 🤖 准备回复: '{rule.reply}'"
 
@@ -390,6 +402,9 @@ class AutoReplyClient(discord.Client):
                     print(error_msg)
                     if self.log_callback:
                         self.log_callback(error_msg)
+                finally:
+                    if claimed:
+                        self.discord_manager.release_reply_message(message.id)
 
                 break
 
@@ -624,6 +639,7 @@ class DiscordManager:
         self.replied_messages: Set[int] = set()
         self.max_replied_messages: int = 1000  # 最多跟踪1000条消息
         self.reply_processing_messages: Set[int] = set()  # 正在处理的消息ID，避免并发重复回复
+        self.reply_scheduled_messages: Set[int] = set()  # 延迟前抢占，避免所有监听账号同时请求
 
         # 功能启用状态
         self.reply_enabled: bool = False  # 是否启用自动回复
@@ -858,6 +874,15 @@ class DiscordManager:
         # 如果所有账号都被限制，返回None
         return None
 
+    def claim_reply_message(self, message_id: int) -> bool:
+        if message_id in self.replied_messages or message_id in self.reply_scheduled_messages:
+            return False
+        self.reply_scheduled_messages.add(message_id)
+        return True
+
+    def release_reply_message(self, message_id: int):
+        self.reply_scheduled_messages.discard(message_id)
+
     async def send_rotated_reply(self, message, reply_text: str, rule_name: str = "",
                                  image_path: Optional[str] = None,
                                  allowed_tokens: Optional[Set[str]] = None,
@@ -952,6 +977,32 @@ class DiscordManager:
                         channel = target_message.thread
                         target_message = None
 
+                    # 普通频道消息必须在其关联子区中回复：优先复用已有子区，
+                    # 没有则从原消息创建。创建失败时交给下一个账号重试。
+                    if target_message is not None:
+                        flags = getattr(target_message, "flags", None)
+                        if getattr(flags, "has_thread", False):
+                            fetch_thread = getattr(target_message, "fetch_thread", None)
+                            if callable(fetch_thread):
+                                channel = await fetch_thread()
+
+                        if _channel_parent_id(channel) is None:
+                            create_thread = getattr(channel, "create_thread", None)
+                            if not callable(create_thread):
+                                raise RuntimeError("当前频道不支持创建消息子区")
+                            try:
+                                channel = await create_thread(
+                                    name=_build_reply_thread_name(target_message),
+                                    message=target_message,
+                                )
+                            except Exception as create_error:
+                                thread_id = _coerce_channel_id(getattr(target_message, "id", None))
+                                try:
+                                    channel = client.get_channel(thread_id) or await client.fetch_channel(thread_id)
+                                except Exception:
+                                    raise create_error
+                        target_message = None
+
                     image_paths = []
                     if image_path:
                         separators = [';', ',']
@@ -973,22 +1024,7 @@ class DiscordManager:
                         else:
                             await channel.send(reply_text)
 
-                    try:
-                        if target_message is None:
-                            await send_to_thread()
-                        elif image_paths:
-                            files = [discord.File(path) for path in image_paths]
-                            if reply_text.strip():
-                                await target_message.reply(reply_text, files=files)
-                            else:
-                                await target_message.reply(files=files)
-                        else:
-                            await target_message.reply(reply_text)
-                    except Exception:
-                        if isinstance(channel, discord.Thread):
-                            await send_to_thread()
-                        else:
-                            raise
+                    await send_to_thread()
 
                     self.replied_messages.add(message.id)
                     if len(self.replied_messages) > self.max_replied_messages:
