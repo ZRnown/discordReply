@@ -357,7 +357,7 @@ class AutoReplyClient(discord.Client):
                         await asyncio.sleep(delay)
 
                     # 检查是否启用轮换模式
-                    if (self.discord_manager and self.discord_manager.rotation_enabled):
+                    if self.discord_manager:
                         # 使用轮换模式
                         allowed_tokens = set(rule.account_ids) if rule.account_ids else None
                         success = await self.discord_manager.send_rotated_reply(
@@ -365,7 +365,8 @@ class AutoReplyClient(discord.Client):
                             rule.reply,
                             rule.keywords[0] if rule.keywords else "",
                             image_path=rule.image_path,
-                            allowed_tokens=allowed_tokens
+                            allowed_tokens=allowed_tokens,
+                            force=True
                         )
                         if success:
                             success_msg = f"[{self.account.alias}] ✅ 轮换回复成功"
@@ -373,10 +374,7 @@ class AutoReplyClient(discord.Client):
                             if self.log_callback:
                                 self.log_callback(success_msg)
                         else:
-                            error_msg = f"[{self.account.alias}] ❌ 轮换回复失败"
-                            print(error_msg)
-                            if self.log_callback:
-                                self.log_callback(error_msg)
+                            print(f"[{self.account.alias}] 轮换回复未执行，可能已由其他账号处理")
                     else:
                         # 使用普通回复
                         success = await self._send_reply_with_image(message, rule.reply, rule.image_path)
@@ -836,7 +834,7 @@ class DiscordManager:
 
     def get_next_available_account(self, allowed_tokens: Optional[Set[str]] = None) -> Optional[Account]:
         """获取下一个可用的账号（用于轮换）"""
-        if not self.rotation_enabled or not self.accounts:
+        if not self.accounts:
             return None
 
         # 查找所有有效的活跃账号
@@ -870,9 +868,10 @@ class DiscordManager:
 
     async def send_rotated_reply(self, message, reply_text: str, rule_name: str = "",
                                  image_path: Optional[str] = None,
-                                 allowed_tokens: Optional[Set[str]] = None) -> bool:
+                                 allowed_tokens: Optional[Set[str]] = None,
+                                 force: bool = False) -> bool:
         """使用轮换账号发送回复"""
-        if not self.rotation_enabled:
+        if not self.rotation_enabled and not force:
             return False
 
         # 检查这条消息是否已经被回复过
