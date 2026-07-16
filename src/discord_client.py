@@ -369,10 +369,7 @@ class AutoReplyClient(discord.Client):
                             force=True
                         )
                         if success:
-                            success_msg = f"[{self.account.alias}] ✅ 轮换回复成功"
-                            print(success_msg)
-                            if self.log_callback:
-                                self.log_callback(success_msg)
+                            print(f"[{self.account.alias}] 轮换回复已由管理器完成")
                         else:
                             print(f"[{self.account.alias}] 轮换回复未执行，可能已由其他账号处理")
                     else:
@@ -943,6 +940,10 @@ class DiscordManager:
                             else:
                                 raise
 
+                    if hasattr(target_message, 'thread') and target_message.thread:
+                        channel = target_message.thread
+                        target_message = None
+
                     image_paths = []
                     if image_path:
                         separators = [';', ',']
@@ -966,8 +967,8 @@ class DiscordManager:
 
                     try:
                         if target_message is None:
-                            raise AttributeError("target message unavailable")
-                        if image_paths:
+                            await send_to_thread()
+                        elif image_paths:
                             files = [discord.File(path) for path in image_paths]
                             if reply_text.strip():
                                 await target_message.reply(reply_text, files=files)
