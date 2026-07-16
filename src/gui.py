@@ -417,7 +417,7 @@ class RuleDialog(QDialog):
         delay_layout.addWidget(QLabel("回复延迟:"))
         self.delay_min_spin = QDoubleSpinBox()
         self.delay_min_spin.setRange(0.1, 30.0)
-        self.delay_min_spin.setValue(0.1 if not self.rule else self.rule.delay_min)
+        self.delay_min_spin.setValue(3.0 if not self.rule else self.rule.delay_min)
         self.delay_min_spin.setSuffix("秒")
         delay_layout.addWidget(self.delay_min_spin)
 
@@ -425,7 +425,7 @@ class RuleDialog(QDialog):
 
         self.delay_max_spin = QDoubleSpinBox()
         self.delay_max_spin.setRange(0.1, 30.0)
-        self.delay_max_spin.setValue(1.0 if not self.rule else self.rule.delay_max)
+        self.delay_max_spin.setValue(5.0 if not self.rule else self.rule.delay_max)
         self.delay_max_spin.setSuffix("秒")
         delay_layout.addWidget(self.delay_max_spin)
 
@@ -4712,8 +4712,8 @@ class MainWindow(QMainWindow):
                 "reply": reply_text,
                 "match_type": match_type,
                 "target_channels": target_channels,
-                "delay_min": safe_float(data.get("delay_min") or data.get("最小延迟") or data.get("延迟下限") or 0.1, 0.1),
-                "delay_max": safe_float(data.get("delay_max") or data.get("最大延迟") or data.get("延迟上限") or 1.0, 1.0),
+                "delay_min": safe_float(data.get("delay_min") or data.get("最小延迟") or data.get("延迟下限") or 3.0, 3.0),
+                "delay_max": safe_float(data.get("delay_max") or data.get("最大延迟") or data.get("延迟上限") or 5.0, 5.0),
                 "is_active": parse_bool(data.get("is_active") if "is_active" in data else data.get("启用"), True),
                 "ignore_replies": parse_bool(data.get("ignore_replies") if "ignore_replies" in data else data.get("忽略回复"), True),
                 "ignore_mentions": parse_bool(data.get("ignore_mentions") if "ignore_mentions" in data else data.get("忽略提及"), True),
@@ -4847,8 +4847,8 @@ class MainWindow(QMainWindow):
                     "reply": reply_text,
                     "match_type": "partial",
                     "target_channels": [],
-                    "delay_min": 0.1,
-                    "delay_max": 1.0,
+                    "delay_min": 3.0,
+                    "delay_max": 5.0,
                     "is_active": True,
                     "ignore_replies": True,
                     "ignore_mentions": True,
@@ -4875,8 +4875,8 @@ class MainWindow(QMainWindow):
                 reply_text,
                 MatchType(rule_data.get("match_type", "partial")),
                 rule_data.get("target_channels", []),
-                rule_data.get("delay_min", 0.1),
-                rule_data.get("delay_max", 1.0),
+                rule_data.get("delay_min", 3.0),
+                rule_data.get("delay_max", 5.0),
                 rule_data.get("ignore_replies", True),
                 rule_data.get("ignore_mentions", True),
                 rule_data.get("case_sensitive", False),

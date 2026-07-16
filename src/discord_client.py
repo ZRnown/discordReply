@@ -161,8 +161,8 @@ class Rule:
     reply: str
     match_type: MatchType
     target_channels: List[int]
-    delay_min: float = 0.1
-    delay_max: float = 1.0
+    delay_min: float = 3.0
+    delay_max: float = 5.0
     is_active: bool = True
     ignore_replies: bool = True  # 是否忽略回复他人的消息
     ignore_mentions: bool = True  # 是否忽略包含@他人的消息
@@ -339,16 +339,11 @@ class AutoReplyClient(discord.Client):
 
                 print(match_msg)
                 print(reply_msg)
-                if self.log_callback:
-                    self.log_callback(match_msg)
-                    self.log_callback(reply_msg)
 
                 try:
                     delay = random.uniform(rule.delay_min, rule.delay_max)
                     delay_msg = f"[{self.account.alias}] ⏱️  等待 {delay:.1f} 秒..."
                     print(delay_msg)
-                    if self.log_callback:
-                        self.log_callback(delay_msg)
 
                     try:
                         async with message.channel.typing():
@@ -712,7 +707,7 @@ class DiscordManager:
         self.accounts = [acc for acc in self.accounts if acc.token != token]
 
     def add_rule(self, keywords: List[str], reply: str, match_type: MatchType,
-                 target_channels: List[int], delay_min: float = 0.1, delay_max: float = 1.0,
+                 target_channels: List[int], delay_min: float = 3.0, delay_max: float = 5.0,
                  ignore_replies: bool = True, ignore_mentions: bool = True,
                  case_sensitive: bool = False, image_path: Optional[str] = None,
                  account_ids: Optional[List[str]] = None):
@@ -917,15 +912,31 @@ class DiscordManager:
                     continue
 
                 try:
-                    channel = client.get_channel(message.channel.id)
+                    source_channel = message.channel
+                    source_channel_id = _coerce_channel_id(getattr(source_channel, "id", None))
+                    source_parent_id = _channel_parent_id(source_channel)
+
+                    # Messages received inside a forum post already belong to a Thread.
+                    # A forum starter message also uses its message ID as the thread ID.
+                    thread_id = source_channel_id if source_parent_id is not None else None
+                    source_type = str(getattr(source_channel, "type", "")).lower()
+                    if thread_id is None and (
+                        isinstance(source_channel, discord.ForumChannel)
+                        or "forum" in source_type
+                        or source_channel.__class__.__name__.lower() == "forumchannel"
+                    ):
+                        thread_id = _coerce_channel_id(message.id)
+
+                    channel_id = thread_id or source_channel_id
+                    channel = client.get_channel(channel_id)
                     if not channel:
-                        channel = await client.fetch_channel(message.channel.id)
+                        channel = await client.fetch_channel(channel_id)
                     target_message = None
-                    try:
-                        target_message = await channel.fetch_message(message.id)
-                    except (discord.NotFound, discord.Forbidden, AttributeError):
-                        if not isinstance(channel, discord.Thread):
-                            parent_id = _channel_parent_id(message.channel)
+                    if _channel_parent_id(channel) is None:
+                        try:
+                            target_message = await channel.fetch_message(message.id)
+                        except (discord.NotFound, discord.Forbidden, AttributeError):
+                            parent_id = _channel_parent_id(source_channel)
                             parent_channel = client.get_channel(parent_id) if parent_id else None
                             if parent_channel is None and parent_id:
                                 try:
@@ -934,13 +945,10 @@ class DiscordManager:
                                     parent_channel = None
                             if parent_channel is not None and hasattr(parent_channel, "fetch_message"):
                                 target_message = await parent_channel.fetch_message(message.id)
-                                if hasattr(target_message, 'thread') and target_message.thread:
-                                    channel = target_message.thread
-                                    target_message = await channel.fetch_message(message.id)
                             else:
                                 raise
 
-                    if hasattr(target_message, 'thread') and target_message.thread:
+                    if target_message is not None and getattr(target_message, "thread", None):
                         channel = target_message.thread
                         target_message = None
 
