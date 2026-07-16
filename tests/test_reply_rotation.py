@@ -99,7 +99,7 @@ class ReplyThreadRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(thread.sent, [("hello", None)])
         self.assertEqual(target_message.reply_calls, [])
 
-    async def test_normal_message_creates_thread_before_replying(self):
+    async def test_normal_message_without_thread_is_not_replied_outside(self):
         manager = DiscordManager()
         account = Account("token-a", is_valid=True)
         thread = _FakeThread()
@@ -114,10 +114,9 @@ class ReplyThreadRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         success = await manager.send_rotated_reply(message, "hello", force=True)
 
-        self.assertTrue(success)
-        self.assertEqual(len(channel.create_calls), 1)
-        self.assertIs(channel.create_calls[0][1], target_message)
-        self.assertEqual(thread.sent, [("hello", None)])
+        self.assertFalse(success)
+        self.assertEqual(channel.create_calls, [])
+        self.assertEqual(thread.sent, [])
         self.assertEqual(target_message.reply_calls, [])
 
     async def test_message_already_in_thread_is_sent_to_same_thread(self):

@@ -47,13 +47,6 @@ def _channel_matches_targets(channel, target_channels: List[int]) -> bool:
     return channel_id in targets or parent_id in targets
 
 
-def _build_reply_thread_name(message) -> str:
-    content = re.sub(r"\s+", " ", str(getattr(message, "content", "") or "")).strip()
-    author_name = str(getattr(getattr(message, "author", None), "name", "") or "").strip()
-    name = content[:80] if content else (f"{author_name} 的消息" if author_name else "自动回复")
-    return name.strip()[:95] or "自动回复"
-
-
 def parse_discord_comment_target(raw_link: str) -> Tuple[Optional[int], Optional[int]]:
     text = str(raw_link or "").strip()
     if not text:
@@ -977,8 +970,7 @@ class DiscordManager:
                         channel = target_message.thread
                         target_message = None
 
-                    # 普通频道消息必须在其关联子区中回复：优先复用已有子区，
-                    # 没有则从原消息创建。创建失败时交给下一个账号重试。
+                    # 自动回复只进入已经存在的消息子区，绝不使用用户账号创建子区。
                     if target_message is not None:
                         flags = getattr(target_message, "flags", None)
                         if getattr(flags, "has_thread", False):
@@ -987,20 +979,7 @@ class DiscordManager:
                                 channel = await fetch_thread()
 
                         if _channel_parent_id(channel) is None:
-                            create_thread = getattr(channel, "create_thread", None)
-                            if not callable(create_thread):
-                                raise RuntimeError("当前频道不支持创建消息子区")
-                            try:
-                                channel = await create_thread(
-                                    name=_build_reply_thread_name(target_message),
-                                    message=target_message,
-                                )
-                            except Exception as create_error:
-                                thread_id = _coerce_channel_id(getattr(target_message, "id", None))
-                                try:
-                                    channel = client.get_channel(thread_id) or await client.fetch_channel(thread_id)
-                                except Exception:
-                                    raise create_error
+                            raise RuntimeError("原消息没有可用的已有子区，已跳过发送")
                         target_message = None
 
                     image_paths = []
